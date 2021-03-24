@@ -1,6 +1,7 @@
 import argparse
 from segmodel import *
 from TSMLDG import MetaFrameWork
+import os
 
 parser = argparse.ArgumentParser(description='TSMLDG train args parser')
 parser.add_argument('--name', default='exp', help='name of the experiment')
@@ -13,8 +14,8 @@ parser.add_argument('--lamb_sep', type=float, default=1e-2, help='outer learning
 parser.add_argument('--resume', action='store_true', help='resume the training procedure')
 parser.add_argument('--debug', action='store_true', help='set the workers=0 and batch size=1 to accelerate debug')
 
-parser.add_argument('--train-size', type=int, default=8, help='the batch size of training')
-parser.add_argument('--test-size', type=int, default=16, help='the batch size of evaluation')
+parser.add_argument('--train-size', type=int, default=2, help='the batch size of training')
+parser.add_argument('--test-size', type=int, default=8, help='the batch size of evaluation')
 parser.add_argument('--train-num', type=int, default=1,
                     help='every ? iteration do one meta train, 1 is meta train, 10000000 is normal supervised learning.')
 parser.add_argument('--network', default='MemDeeplabv3plus', help='network for DG')
@@ -23,6 +24,8 @@ parser.add_argument('--memory', action='store_true', help='use memory')
 
 def train():
     args = vars(parser.parse_args())
+    if args['debug'] == True:
+        os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     print(args)
     for name in args['source']:
         assert name in 'GSIMCcuv'
@@ -32,7 +35,7 @@ def train():
     if args['network'] == 'MemDeeplabv3plus':
         args['network'] = MemDeeplabv3plus
         if args.pop('memory'):
-            memory_init = {'memory_size':10, 'feature_dim':256, 'key_dim':256, 'temp_update':0.1,
+            memory_init = {'memory_size':19, 'feature_dim':256, 'key_dim':256, 'temp_update':0.1,
                      'temp_gather':0.1}
         else:
             memory_init = None
@@ -47,6 +50,6 @@ def train():
 
 if __name__ == '__main__':
     # from utils.task import FunctionJob
-    # job = FunctionJob([train], gpus=[[3, 1, 2, 0]])
-    # job.run(minimum_memory=20000)
+    # job = FunctionJob([train], gpus=[[1]])
+    # job.run(minimum_memory=10000)
     train()

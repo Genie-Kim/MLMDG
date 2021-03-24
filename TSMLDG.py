@@ -51,8 +51,9 @@ class MetaFrameWork(object):
         self.save_interval = 1
         self.save_path = Path(self.exp_name)
         self.debug = debug
+        self.m_items = None
         self.init(network_init)
-        self.using_memory = True if type(self.m_items) != None else False
+        self.using_memory = True if type(self.m_items) != type(None) else False
         self.lamb_cpt = lamb_cpt
         self.lamb_sep = lamb_sep
 
@@ -61,7 +62,6 @@ class MetaFrameWork(object):
         if meminit != None:
             self.m_items = F.normalize(torch.rand((meminit['memory_size'], meminit['feature_dim']), dtype=torch.float),
                                   dim=1).cuda()  # Initialize the memory items
-
 
         kwargs = network_init
         self.backbone = nn.DataParallel(self.network(**kwargs)).cuda()
@@ -233,6 +233,8 @@ class MetaFrameWork(object):
 
                     self.print(self.get_string(epoch, it, loss_meters, acc_meters, lr, meta), end='')
                     self.tfb_log(epoch, it, loss_meters, acc_meters)
+                    if self.debug:
+                        break
             self.print(self.train_timer.get_formatted_duration())
             self.log(self.get_string(epoch, it, loss_meters, acc_meters, lr, meta) + '\n')
 
@@ -278,7 +280,11 @@ class MetaFrameWork(object):
             self.nim.set_max_len(len(dataset))
             for p, img, target in dataset:
                 img, target = to_cuda(get_img_target(img, target))
-                logits = self.backbone(img)[0]
+                if self.using_memory:
+                    outputs = self.backbone(img,self.m_items,write=False)[0]
+                else:
+                    outputs = self.backbone(img)[0]
+                logits = outputs[0]
                 self.nim(logits, target)
         self.log('\nNormal validation : {}\n'.format(self.nim.get_acc()))
         if hasattr(dataset.dataset, 'format_class_iou'):
@@ -375,7 +381,8 @@ class MetaFrameWork(object):
             'opt': self.opt_old.state_dict(),
             'epoch': self.epoch + 1,
             'best': self.best_target_acc,
-            'info': info
+            'info': info,
+            'm_items': self.m_items
         }
         self.print('Saving epoch : {}'.format(self.epoch))
         torch.save(dicts, self.save_path / '{}.pth'.format(name))
