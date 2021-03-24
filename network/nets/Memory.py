@@ -7,6 +7,7 @@ import math
 import functools
 import random
 from torch.nn import functional as F
+from utils.helpers import initialize_weights, set_trainable
 
 def random_uniform(shape, low, high, cuda):
     x = torch.rand(*shape)
@@ -60,6 +61,12 @@ class Memory(nn.Module):
         self.key_dim = key_dim
         self.temp_update = temp_update
         self.temp_gather = temp_gather
+        self.output = nn.Sequential( # refer object contextual represenation network fusion layer...
+                nn.Conv2d(512, 256, kernel_size=1, stride=1, bias=False),
+                nn.BatchNorm2d(256),
+                nn.ReLU(inplace=True),
+            )
+        initialize_weights(self)
         
     def hard_neg_mem(self, mem, i):
         similarity = torch.matmul(mem,torch.t(self.keys_var))
@@ -157,15 +164,17 @@ class Memory(nn.Module):
         else:
             #gathering loss
             gathering_loss = self.gather_loss(query,keys, train)
-            
+            # spreading_loss
+            spreading_loss = self.spread_loss(query, keys, train)
             # read
             updated_query, softmax_score_query,softmax_score_memory = self.read(query, keys)
-            
             #update
             updated_memory = keys
-                
-               
-            return updated_query, updated_memory, softmax_score_query, softmax_score_memory, gathering_loss
+
+            return updated_query, updated_memory, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss
+
+
+
         
         
     
@@ -254,6 +263,8 @@ class Memory(nn.Module):
         updated_query = torch.cat((query_reshape, concat_memory), dim = 1) # (b X h X w) X 2d
         updated_query = updated_query.view(batch_size, h, w, 2*dims)
         updated_query = updated_query.permute(0,3,1,2)
+
+        updated_query = self.output(updated_query)
         
         return updated_query, softmax_score_query, softmax_score_memory
     

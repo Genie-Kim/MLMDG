@@ -1,5 +1,4 @@
 from torch import nn
-from network.nets.SegNet import SegNet
 from network.nets.deeplabv3_plus import DeepLab
 from network.nets.Memory import Memory
 import torch.nn.functional as F
@@ -40,38 +39,38 @@ import torch.nn.functional as F
 
 class MemDeeplabv3plus(DeepLab):
     def __init__(self, in_ch=3, nclass=19, backbone='resnet50', output_stride=8, pretrained=True, freeze_bn=False,
-                     freeze_backbone=False, memory_size=10, feature_dim=512, key_dim=512, temp_update=0.1,
-                     temp_gather=0.1,skipconnect=True, **_):
+                     freeze_backbone=False, skip_connect = True, memory_init = None, **_):
         super(MemDeeplabv3plus, self).__init__(num_classes=nclass, in_channels=in_ch, backbone=backbone, pretrained=pretrained,
-                output_stride=output_stride, freeze_bn=freeze_bn, freeze_backbone=freeze_backbone, **_)
-        self.memory = Memory(memory_size,feature_dim, key_dim, temp_update, temp_gather)
-        self.skipconnect = skipconnect
+                output_stride=output_stride, freeze_bn=freeze_bn, freeze_backbone=freeze_backbone,skip_connect = skip_connect,**_)
 
-    def forward(self, x, keys, inner=True):
+        if type(memory_init) == dict:
+            self.memory = Memory(**memory_init)
+
+
+    def forward(self, x,keys=None, write=True):
         H, W = x.size(2), x.size(3)
         x, low_level_features = self.backbone(x)
         fea = self.ASSP(x)
-        if inner: # inner update : write, may cut skip connection
+        features = fea.clone().detach()
+        mem_output = []
+        # memory
+        if type(keys) != None:
+            if write:
+                fea, keys, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss = self.memory(
+                    fea, keys, write)
+                updated_features = fea.clone().detach()
+                mem_output = [keys, softmax_score_query, softmax_score_memory, updated_features,gathering_loss, spreading_loss]
+            else:
+                fea, keys, softmax_score_query, softmax_score_memory, gathering_loss = self.memory(
+                    fea, keys, write)
+                updated_features = fea.clone().detach()
+                mem_output = [keys, softmax_score_query, softmax_score_memory, updated_features,gathering_loss]
 
-            # memory
-            updated_fea, keys, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss = self.memory(
-                fea, keys, inner)
-            if self.skipconnect:
-                output = self.decoder(updated_fea, low_level_features)
-            output = F.interpolate(output, size=(H, W), mode='bilinear', align_corners=True)
+        fea = self.decoder(fea, low_level_features)
 
+        output = F.interpolate(fea, size=(H, W), mode='bilinear', align_corners=True)
 
-        else: # outer update : do not write
-
-            # memory
-            updated_fea, keys, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss = self.memory(
-                fea, keys, inner)
-
-            if self.skipconnect:
-                output = self.decoder(updated_fea, low_level_features)
-            output = F.interpolate(output, size=(H, W), mode='bilinear', align_corners=True)
-
-        return output, keys, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss
+        return ([output,features], mem_output)
 
 
     def not_track(self, module=None):
@@ -84,8 +83,19 @@ class MemDeeplabv3plus(DeepLab):
             if isinstance(module, nn.BatchNorm2d):
                 module.track_running_stats = False
 
-    def remove_dropout(self):
-        self.x[-1].p = 1e-10
 
-    def recover_dropout(self):
-        self.x[-1].p = 0.1
+class DeepLabv3plus(DeepLab):
+    def __init__(self,in_ch=3, nclass=19, backbone='resnet50', output_stride=8, pretrained=True, freeze_bn=False,
+                     freeze_backbone=False, **_):
+        super(DeepLabv3plus, self).__init__(num_classes=nclass, in_channels=in_ch, backbone=backbone, pretrained=pretrained,
+                output_stride=output_stride, freeze_bn=freeze_bn, freeze_backbone=freeze_backbone, **_)
+
+    def not_track(self, module=None):
+        if module is None:
+            module = self
+        if len(module._modules) != 0:
+            for (k, v) in module._modules.items():
+                self.not_track(v)
+        else:
+            if isinstance(module, nn.BatchNorm2d):
+                module.track_running_stats = False

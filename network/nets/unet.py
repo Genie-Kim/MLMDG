@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from itertools import chain
 from utils.helpers import initialize_weights, set_trainable
 from itertools import chain
-from models import resnet
+from network.nets import resnet
 
 
 def x2conv(in_channels, out_channels, inner_channels=None):

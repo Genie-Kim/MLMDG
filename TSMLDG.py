@@ -6,7 +6,7 @@ from tqdm import tqdm
 from dataset.dg_dataset import *
 from network.components.customized_evaluate import NaturalImageMeasure, MeterDicts
 from network.components.schedulers import PolyLR
-from segmodel import Net
+from segmodel import *
 from utils.nn_utils import *
 from utils.nn_utils import get_updated_network, get_logger, get_img_target
 from utils.visualize import show_graphs
@@ -20,9 +20,9 @@ np.random.seed(seed)
 
 
 class MetaFrameWork(object):
-    def __init__(self, name='normal_all', train_num=1, source='GSIM',
-                 target='C', network=DeepLab, resume=True, dataset=DGMetaDataSets,
-                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=True, bn='torch',debug=False):
+    def __init__(self,network_init, name='normal_all', train_num=1, source='GSIM',
+                 target='C', network=MemDeeplabv3plus, resume=True, dataset=DGMetaDataSets,
+                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=True,debug=False,lamb_cpt = 0.01,lamb_sep = 0.01):
         super(MetaFrameWork, self).__init__()
         self.no_source_test = no_source_test
         self.train_num = train_num
@@ -37,7 +37,6 @@ class MetaFrameWork(object):
         self.test_size = test_size
         self.source = source
         self.target = target
-        self.bn = bn
 
         self.epoch = 1
         self.best_target_acc = 0
@@ -52,10 +51,19 @@ class MetaFrameWork(object):
         self.save_interval = 1
         self.save_path = Path(self.exp_name)
         self.debug = debug
-        self.init()
+        self.init(network_init)
+        self.using_memory = True if type(self.m_items) != None else False
+        self.lamb_cpt = lamb_cpt
+        self.lamb_sep = lamb_sep
 
-    def init(self):
-        kwargs = {'bn': self.bn, 'output_stride': 16,'backbone':'resnet50'}
+    def init(self,network_init):
+        meminit = network_init['memory_init']
+        if meminit != None:
+            self.m_items = F.normalize(torch.rand((meminit['memory_size'], meminit['feature_dim']), dtype=torch.float),
+                                  dim=1).cuda()  # Initialize the memory items
+
+
+        kwargs = network_init
         self.backbone = nn.DataParallel(self.network(**kwargs)).cuda()
         kwargs.update({'pretrained': False})
         self.updated_net = nn.DataParallel(self.network(**kwargs)).cuda()
@@ -84,9 +92,9 @@ class MetaFrameWork(object):
 
         self.logger = get_logger('train', self.exp_name)
         self.log('exp_name : {}, train_num = {}, source domains = {}, target_domain = {}, lr : inner = {}, outer = {},'
-                 'dataset : {}, net : {}, bn : {}\n'.
+                 'dataset : {}, net : {}\n'.
                  format(self.exp_name, self.train_num, self.source, self.target, self.inner_update_lr, self.outer_update_lr, self.dataset,
-                        self.network, self.bn))
+                        self.network))
         self.log(self.exp_name + '\n')
         self.train_timer, self.test_timer = Timer(), Timer()
 
@@ -137,9 +145,19 @@ class MetaFrameWork(object):
         meta_test_targets = targets[:, test_idx].reshape(-1, 1, H, W)
 
         # Meta-Train
-        tr_logits = self.backbone(meta_train_imgs)[0]
+        in_cpt_loss = torch.zeros(1).cuda()
+        in_sep_loss = torch.zeros(1).cuda()
+
+        if self.using_memory:
+            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs,keys = self.m_items)
+            in_sep_loss = tr_mem_output.pop(-1)
+            in_cpt_loss = tr_mem_output.pop(-1)
+        else:
+            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
+        tr_logits = tr_net_output[0]
         tr_logits = make_same_size(tr_logits, meta_train_targets)
-        ds_loss = self.ce(tr_logits, meta_train_targets[:, 0])
+        in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
+        ds_loss = in_seg_loss + self.lamb_cpt * in_cpt_loss + self.lamb_sep * in_sep_loss
 
         # Update new network
         self.opt_old.zero_grad()
@@ -147,10 +165,21 @@ class MetaFrameWork(object):
         updated_net = get_updated_network(self.backbone, self.updated_net, self.inner_update_lr).train().cuda()
 
         # Meta-Test
-        te_logits = updated_net(meta_test_imgs)[0]
-        # te_logits = test_res[0]
+
+        out_cpt_loss = torch.zeros(1).cuda()
+        out_sep_loss = torch.zeros(1).cuda()
+        if self.using_memory:
+            te_net_output, te_mem_output = updated_net(meta_test_imgs,keys = self.m_items,write=False)
+            out_sep_loss = te_mem_output.pop(-1)
+            out_cpt_loss = te_mem_output.pop(-1)
+        else:
+            te_net_output, te_mem_output = updated_net(meta_test_imgs)
+
+        te_logits = te_net_output[0]
         te_logits = make_same_size(te_logits, meta_test_targets)
-        dg_loss = self.ce(te_logits, meta_test_targets[:, 0])
+        out_seg_loss = self.ce(te_logits, meta_test_targets[:, 0])
+        dg_loss = out_seg_loss + self.lamb_cpt * out_cpt_loss + self.lamb_sep * out_sep_loss
+
         with torch.no_grad():
             self.nim(te_logits, meta_test_targets)
 
@@ -158,13 +187,25 @@ class MetaFrameWork(object):
         dg_loss.backward()
         self.opt_old.step()
         self.scheduler_old.step(epoch, it)
+
+
         losses = {
             'dg': dg_loss.item(),
-            'ds': ds_loss.item()
+            'ds': ds_loss.item(),
+
+            'in_seg_loss' : in_seg_loss.item(),
+            'in_cpt_loss' : in_cpt_loss.item(),
+            'in_sep_loss' : in_sep_loss.item(),
+
+            'out_seg_loss' : out_seg_loss.item(),
+            'out_cpt_loss' : out_cpt_loss.item(),
+            'out_sep_loss' : out_sep_loss.item(),
         }
+
         acc = {
             'iou': self.nim.get_res()[0],
         }
+
         return losses, acc, self.scheduler_old.get_lr(epoch, it)[0]
 
     def do_train(self):
