@@ -55,16 +55,11 @@ class MemDeeplabv3plus(DeepLab):
         mem_output = []
         # memory
         if type(keys) != None:
-            if write:
-                fea, keys, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss = self.memory(
-                    fea, keys, write)
-                updated_features = fea.clone().detach()
-                mem_output = [keys, softmax_score_query, softmax_score_memory, updated_features,gathering_loss, spreading_loss]
-            else:
-                fea, keys, softmax_score_query, softmax_score_memory, gathering_loss = self.memory(
-                    fea, keys, write)
-                updated_features = fea.clone().detach()
-                mem_output = [keys, softmax_score_query, softmax_score_memory, updated_features,gathering_loss]
+
+            fea, keys, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss = self.memory(
+                fea, keys, write)
+            updated_features = fea.clone().detach()
+            mem_output = [keys, softmax_score_query, softmax_score_memory, updated_features,gathering_loss, spreading_loss]
 
         fea = self.decoder(fea, low_level_features)
 
