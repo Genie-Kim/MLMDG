@@ -6,7 +6,7 @@ from tqdm import tqdm
 from dataset.dg_dataset import *
 from network.components.customized_evaluate import NaturalImageMeasure, MeterDicts
 from network.components.schedulers import PolyLR
-from segmodel import *
+import segmodel
 from utils.nn_utils import *
 from utils.nn_utils import get_updated_network, get_logger, get_img_target
 from utils.visualize import show_graphs
@@ -21,8 +21,8 @@ np.random.seed(seed)
 
 class MetaFrameWork(object):
     def __init__(self,network_init, name='normal_all', train_num=1, source='GSIM',
-                 target='C', network=MemDeeplabv3plus, resume=True, dataset=DGMetaDataSets,
-                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=True,debug=False,lamb_cpt = 0.01,lamb_sep = 0.01):
+                 target='C', network='MemDeeplabv3plus', resume=True, dataset=DGMetaDataSets,
+                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=True,debug=False,lamb_cpt = 0.01,lamb_sep = 0.01,no_outer_memloss = False,no_inner_memloss = False):
         super(MetaFrameWork, self).__init__()
         self.no_source_test = no_source_test
         self.train_num = train_num
@@ -31,7 +31,12 @@ class MetaFrameWork(object):
 
         self.inner_update_lr = inner_lr
         self.outer_update_lr = outer_lr
-        self.network = network
+
+        if network in vars(segmodel):
+            self.network = vars(segmodel)[network]
+        else:
+            raise NotImplementedError
+
         self.dataset = dataset
         self.train_size = train_size
         self.test_size = test_size
@@ -51,17 +56,22 @@ class MetaFrameWork(object):
         self.save_interval = 1
         self.save_path = Path(self.exp_name)
         self.debug = debug
-        self.m_items = None
-        self.init(network_init)
-        self.using_memory = True if type(self.m_items) != type(None) else False
         self.lamb_cpt = lamb_cpt
         self.lamb_sep = lamb_sep
+        self.no_outer_memloss = no_outer_memloss # if true, only segmentation loss on outer step.
+        self.no_inner_memloss = no_inner_memloss # if true, only segmentation loss on inner step.
+        self.init(network_init)
+        self.using_memory = True if type(self.m_items) != type(None) else False
+
 
     def init(self,network_init):
         meminit = network_init['memory_init']
         if meminit != None:
             self.m_items = F.normalize(torch.rand((meminit['memory_size'], meminit['feature_dim']), dtype=torch.float),
                                   dim=1).cuda()  # Initialize the memory items
+        else:
+            self.m_items = None
+
 
         kwargs = network_init
         self.backbone = nn.DataParallel(self.network(**kwargs)).cuda()
@@ -106,9 +116,25 @@ class MetaFrameWork(object):
         meta_train_imgs = imgs.view(-1, C, H, W)
         meta_train_targets = targets.view(-1, 1, H, W)
 
-        tr_logits = self.backbone(meta_train_imgs)[0]
+
+        in_cpt_loss = torch.zeros(1).cuda()
+        in_sep_loss = torch.zeros(1).cuda()
+
+        if self.using_memory:
+            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs,keys = self.m_items)
+            in_sep_loss = tr_mem_output.pop(-1)
+            in_cpt_loss = tr_mem_output.pop(-1)
+        else:
+            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
+        tr_logits = tr_net_output[0]
         tr_logits = make_same_size(tr_logits, meta_train_targets)
-        ds_loss = self.ce(tr_logits, meta_train_targets[:, 0])
+        in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
+
+        if self.no_inner_memloss:
+            ds_loss = in_seg_loss
+        else:
+            ds_loss = in_seg_loss + self.lamb_cpt * in_cpt_loss + self.lamb_sep * in_sep_loss
+
         with torch.no_grad():
             self.nim(tr_logits, meta_train_targets)
 
@@ -157,7 +183,10 @@ class MetaFrameWork(object):
         tr_logits = tr_net_output[0]
         tr_logits = make_same_size(tr_logits, meta_train_targets)
         in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
-        ds_loss = in_seg_loss + self.lamb_cpt * in_cpt_loss + self.lamb_sep * in_sep_loss
+        if self.no_inner_memloss:
+            ds_loss = in_seg_loss
+        else:
+            ds_loss = in_seg_loss + self.lamb_cpt * in_cpt_loss + self.lamb_sep * in_sep_loss
 
         # Update new network
         self.opt_old.zero_grad()
@@ -178,7 +207,11 @@ class MetaFrameWork(object):
         te_logits = te_net_output[0]
         te_logits = make_same_size(te_logits, meta_test_targets)
         out_seg_loss = self.ce(te_logits, meta_test_targets[:, 0])
-        dg_loss = out_seg_loss + self.lamb_cpt * out_cpt_loss + self.lamb_sep * out_sep_loss
+
+        if self.no_outer_memloss:
+            dg_loss = out_seg_loss
+        else:
+            dg_loss = out_seg_loss + self.lamb_cpt * out_cpt_loss + self.lamb_sep * out_sep_loss
 
         with torch.no_grad():
             self.nim(te_logits, meta_test_targets)
@@ -238,7 +271,7 @@ class MetaFrameWork(object):
             self.print(self.train_timer.get_formatted_duration())
             self.log(self.get_string(epoch, it, loss_meters, acc_meters, lr, meta) + '\n')
 
-            self.save('ckpt')
+            # self.save('ckpt')
             if epoch % self.save_interval == 0:
                 with self.test_timer:
                     city_acc = self.val(self.target_loader)
@@ -419,6 +452,276 @@ class MetaFrameWork(object):
             self.log('No ckpt found in {}\n'.format(str(path)))
             self.epoch = 1
             return False
+
+    def predict_target(self, load_path='best_city', overlay=False, color=False, train=False, output_path='predictions',
+                       inputimgname=None):
+        self.load(load_path)
+        import skimage.io as skio
+        dataset = self.target_test_loader
+
+        output_path = Path(self.save_path / output_path)
+        output_path.mkdir(exist_ok=True)
+
+        if train:
+            self.backbone.module.remove_dropout()
+            self.backbone.train()  # 이것으로 할 경우 moving average가 동작하여 statistics를 업데이트 하고, learnable parameter에 대한 정보를 수집한다.
+            # 그런데 torch.no_grad()에 의해 train==True라고 해도 learnable parameter는 update 되지 않음.
+        else:
+            self.backbone.eval()  # 이것으로 할 경우 moving average가 동작하지 않으며 statistic을 업데이트하지 않는다.
+
+        with torch.no_grad():
+            self.nim.clear_cache()
+            self.nim.set_max_len(len(dataset))
+            savenum = self.num_of_prediction
+            count = 0
+            if inputimgname is not None:  # 특정 이미지에 대해서만 prediction하는 코드.
+                for names, img, target in tqdm(dataset):
+                    temp = False
+                    for name in names:
+                        if inputimgname == name.split('/')[-1]:
+                            temp = True
+                    if temp:
+                        img = to_cuda(img)
+                        logits = self.backbone(img)[0]
+                        logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
+                        preds = get_prediction(logits).cpu().numpy()
+                        if color:
+                            trainId_preds = preds
+                        else:
+                            trainId_preds = dataset.dataset.predict(preds)
+
+                        if overlay and color:
+                            for pred, name, onelabel in zip(trainId_preds, names, target):
+                                if inputimgname == name.split('/')[-1]:
+                                    filename = name.split('/')[-1]
+                                    pred_file_name = os.path.splitext(filename)[0] + '_pred.jpg'
+                                    label_file_name = os.path.splitext(filename)[0] + '_label.jpg'
+                                    pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
+                                    ori_img = skio.imread(name).astype(np.uint8)
+                                    onelabel = class_map_2_color_map(onelabel.cpu().numpy().squeeze()).transpose(1, 2,
+                                                                                                                 0).astype(
+                                        np.uint8)
+                                    skio.imsave(str(output_path / pred_file_name), ori_img + 0.4 * pred)
+                                    skio.imsave(str(output_path / label_file_name), ori_img + 0.4 * onelabel)
+                                    break
+                        else:
+                            for pred, name in zip(trainId_preds, names):
+                                if inputimgname == name.split('/')[-1]:
+                                    file_name = name.split('/')[-1]
+                                    if color:
+                                        pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
+                                    skio.imsave(str(output_path / file_name), pred)
+                                    break
+
+
+            else:
+                for names, img, target in tqdm(dataset):
+                    if count <= savenum:
+                        img = to_cuda(img)
+                        logits = self.backbone(img)[0]
+                        logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
+                        preds = get_prediction(logits).cpu().numpy()
+                        if color:
+                            trainId_preds = preds
+                        else:
+                            trainId_preds = dataset.dataset.predict(preds)
+
+                        if overlay and color:
+                            for pred, name, onelabel in zip(trainId_preds, names, target):
+                                filename = name.split('/')[-1]
+                                pred_file_name = os.path.splitext(filename)[0] + '_pred.jpg'
+                                label_file_name = os.path.splitext(filename)[0] + '_label.jpg'
+                                pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
+                                ori_img = skio.imread(name).astype(np.uint8)
+                                onelabel = class_map_2_color_map(onelabel.cpu().numpy().squeeze()).transpose(1, 2,
+                                                                                                             0).astype(
+                                    np.uint8)
+
+                                skio.imsave(str(output_path / pred_file_name), ori_img + 0.4 * pred)
+                                skio.imsave(str(output_path / label_file_name), ori_img + 0.4 * onelabel)
+                        else:
+                            for pred, name in zip(trainId_preds, names):
+                                file_name = name.split('/')[-1]
+                                if color:
+                                    pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
+                                skio.imsave(str(output_path / file_name), pred)
+                        count = count + 1
+                    else:
+                        break
+
+    def draw_tsne(self, inputimgname, load_path='best_city', output_path='tsne', perplexities=[30]):
+        self.load(load_path)
+        import skimage.io as skio
+        dataset = self.target_test_loader
+
+        output_path = Path(self.save_path / output_path)
+        output_path.mkdir(exist_ok=True)
+
+        self.backbone.eval()  # 이것으로 할 경우 moving average가 동작하지 않으며 statistic을 업데이트하지 않는다.
+        sequence_of_colors = ["red", "green", "blue", "magenta", "cyan"]
+
+        with torch.no_grad():
+            self.nim.clear_cache()
+            self.nim.set_max_len(len(dataset))
+            for names, img, targets in tqdm(dataset):
+                temp = False
+                for name in names:
+                    if inputimgname == name.split('/')[-1]:
+                        temp = True
+                if temp:
+                    img = to_cuda(img)
+                    feats = self.backbone(img)[
+                        -1]  # resnet 50 에서 resnet block 네개지나고 끝에서 나온 feature를 conv layer에 넣어서 차원 축소 시킨 것.
+                    targets = (F.interpolate(targets.type(torch.DoubleTensor), feats.size()[2:], align_corners=True,
+                                             mode='bilinear')).type(
+                        torch.uint8)  # down sampling for targets, 너무 크면 안돌아감 tsne
+                    feats = feats.cpu().numpy()
+                    targets = targets.cpu().numpy()
+                    for feat, target, name in zip(feats, targets, names):  # 코드는 이상한데 test batch를 1ㄹ로 하면 되니까 오케이임.
+                        if inputimgname == name.split('/')[-1]:
+                            for perplexity in perplexities:
+
+                                input_img = skio.imread(name)
+                                file_name = os.path.splitext(name.split('/')[-1])[0]
+                                input_img_name = file_name + '.jpg'
+                                tsne_file_name = file_name + '_tsne_' + str(perplexity) + '.jpg'
+                                skio.imsave(str(output_path / input_img_name), input_img)
+                                feat = feat.reshape(512, -1).transpose()
+                                target = target.reshape(1, -1).transpose().squeeze()
+                                # X_embedded = TSNE(n_components=2, perplexity=perplexity, learning_rate=learning_rate).fit_transform(pt_tsne_X.cpu().numpy())
+                                X_embedded = TSNE(n_components=2, perplexity=perplexity,
+                                                  learning_rate=200).fit_transform(feat)  # use cpu memory
+                                print('\ntsne done')
+                                X_embedded = (X_embedded - X_embedded.min()) / (X_embedded.max() - X_embedded.min())
+                                tsne_file_name = Path(output_path / tsne_file_name)
+                                fig = plt.figure(figsize=(10, 10))
+                                ax = fig.add_subplot(111)
+                                label_set = set()
+                                for i in range(X_embedded.shape[0]):
+                                    label = dataset.dataset.idx_2_key[target[i]]
+                                    if label not in label_set:
+                                        label_set.add(label)
+                                        ax.scatter(X_embedded[i, 0], X_embedded[i, 1],
+                                                   c=sequence_of_colors[target[i]], label=label, s=6)
+                                    else:
+                                        ax.scatter(X_embedded[i, 0], X_embedded[i, 1],
+                                                   c=sequence_of_colors[target[i]], s=6)
+                                print('scatter plot done')
+
+                                lgd = ax.legend(loc='upper center', bbox_to_anchor=(1.1, 1))
+                                ax.set_xlim(-0.05, 1.05)
+                                ax.set_ylim(-0.05, 1.05)
+                                fig.savefig(tsne_file_name, bbox_extra_artists=(lgd,), bbox_inches='tight')
+                                fig.clf()
+                            break
+                    break
+
+    def save_feature_per_domain(self, load_path='best_city', output_path='feature_domains', point_num=100,
+                                size2d_feat=3):
+        self.load(load_path)
+        dataset = self.train_loader
+
+        output_path = Path(Path(ROOT) / output_path)
+        output_path.mkdir(exist_ok=True)
+
+        self.backbone.eval()  # 이것으로 할 경우 moving average가 동작하지 않으며 statistic을 업데이트하지 않는다.
+        name_sources = [x.root.name for x in dataset.dataset.domains]  # source name 순서대로 들어감, domain 폴더 이름이 들어감 순서지켜서.
+
+        with torch.no_grad():
+            self.nim.clear_cache()
+            self.nim.set_max_len(len(dataset))
+            pts_in_tsne = 0
+            print('saving feature map per img, per domain, in disk.')
+            while (True):
+                for names, imgs, targets in tqdm(dataset):
+
+                    imgs = to_cuda(imgs)
+
+                    for i in range(len(name_sources)):
+                        domain_name = name_sources[i]
+                        img_in_bch = imgs[:, i, :]
+                        domain_path = Path(output_path / domain_name)
+                        domain_path.mkdir(exist_ok=True)
+
+                        feats = self.backbone(img_in_bch)[
+                            -1]  # resnet 50 에서 resnet block 네개지나고 끝에서 나온 feature를 conv layer에 넣어서 차원 축소 시킨 것.
+                        feats = nn.AvgPool2d(math.ceil(feats.shape[-1] / size2d_feat)).forward(
+                            feats)  # shrink feature map because increasing image number and limit of gpu memory for tsne
+
+                        for feat, feat_num_per_domain in zip(feats, range(pts_in_tsne,
+                                                                          pts_in_tsne + dataset.batch_size)):  # saving feature data per domain folder
+                            feat_name = domain_name + str(feat_num_per_domain) + '.pth'
+                            torch.save(feat.view(1, -1), Path(domain_path / feat_name))
+
+                    pts_in_tsne = pts_in_tsne + dataset.batch_size  # data point per domain update
+                    if pts_in_tsne > point_num:
+                        break
+                if pts_in_tsne > point_num:
+                    break
+
+    def draw_tsne_on_domains(self, output_path='feature_domains', perplexities=[30], learning_rate=10, point_num=100):
+        assert perplexities is not list
+        output_path = Path(Path(ROOT) / output_path)
+        domainid2name = {}
+        folder2alphabet = {
+            'bdd_clear': 'C',
+            'bdd_foggy': 'F',
+            'bdd_rainy': 'R',
+            'bdd_snowy': 'S',
+            'bdd_overcast': 'O',
+            'bdd_partlycloudy': 'P',
+            'bdd_daytime': 'D',
+            'bdd_dawndusk': 'W',
+            'bdd_night': 'N',
+        }
+        # pt_tsne_X = to_cuda(torch.Tensor())
+        sequence_of_colors = ["red", "green", "blue", "magenta", "cyan"]
+
+        pt_tsne_X = torch.Tensor()  # use cpu memory
+        pt_tsne_y = []
+        source_names = []
+        for domain_id, domain_name in enumerate(sorted(os.listdir(output_path))):
+            domainid2name[domain_id] = domain_name
+            domain_path = Path(output_path / domain_name)
+            if os.path.isdir(domain_path) and folder2alphabet[domain_name] in self.source:
+                source_names.append(domain_name)
+                for i, feat_name in enumerate(tqdm(os.listdir(domain_path))):
+                    feat = torch.load(Path(domain_path / feat_name))
+                    feat = feat.cpu()  # use cpu memory
+                    pt_tsne_X = torch.cat((pt_tsne_X, feat))
+                    pt_tsne_y.append(domain_id)  # inplace method
+                    if i > point_num:
+                        break
+
+        torch.cuda.empty_cache()
+        for perplexity in perplexities:
+            # X_embedded = TSNE(n_components=2, perplexity=perplexity, learning_rate=learning_rate).fit_transform(pt_tsne_X.cpu().numpy())
+            X_embedded = TSNE(n_components=2, perplexity=perplexity, learning_rate=learning_rate).fit_transform(
+                pt_tsne_X.numpy())  # use cpu memory
+            print('\ntsne done')
+            X_embedded = (X_embedded - X_embedded.min()) / (X_embedded.max() - X_embedded.min())
+            tsne_file_name = 'feature_tsne_among_' + self.source + '_' + str(perplexity) + '_' + str(
+                learning_rate) + '_' + str(point_num) + '_' + '.png'
+            tsne_file_name = Path(output_path / tsne_file_name)
+            fig = plt.figure(figsize=(10, 10))
+            ax = fig.add_subplot(111)
+            label_set = set()
+            for i in range(X_embedded.shape[0]):
+                label = domainid2name[pt_tsne_y[i]]
+                if label not in label_set:
+                    label_set.add(label)
+                    ax.scatter(X_embedded[i, 0], X_embedded[i, 1], c=sequence_of_colors[pt_tsne_y[i]], label=label, s=6)
+                else:
+                    ax.scatter(X_embedded[i, 0], X_embedded[i, 1], c=sequence_of_colors[pt_tsne_y[i]], s=6)
+            print('scatter plot done')
+
+            lgd = ax.legend(loc='upper center', bbox_to_anchor=(1.1, 1))
+            ax.set_xlim(-0.05, 1.05)
+            ax.set_ylim(-0.05, 1.05)
+            fig.savefig(tsne_file_name, bbox_extra_artists=(lgd,), bbox_inches='tight')
+            fig.clf()
+
+
 
 
 if __name__ == '__main__':
