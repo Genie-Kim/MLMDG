@@ -22,7 +22,7 @@ np.random.seed(seed)
 class MetaFrameWork(object):
     def __init__(self,network_init, name='normal_all', train_num=1, source='GSIM',
                  target='C', network='MemDeeplabv3plus', resume=True, dataset=DGMetaDataSets,
-                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=True,debug=False,lamb_cpt = 0.01,lamb_sep = 0.01,no_outer_memloss = False,no_inner_memloss = False):
+                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=True,debug=False,lamb_cpt = 0.01,lamb_sep = 0.01,no_outer_memloss = False,no_inner_memloss = False,mem_after_update=True):
         super(MetaFrameWork, self).__init__()
         self.no_source_test = no_source_test
         self.train_num = train_num
@@ -56,42 +56,41 @@ class MetaFrameWork(object):
         self.save_interval = 1
         self.save_path = Path(self.exp_name)
         self.debug = debug
+
         self.lamb_cpt = lamb_cpt
         self.lamb_sep = lamb_sep
         self.no_outer_memloss = no_outer_memloss # if true, only segmentation loss on outer step.
         self.no_inner_memloss = no_inner_memloss # if true, only segmentation loss on inner step.
+        self.mem_after_update = mem_after_update
+
         self.init(network_init)
-        self.using_memory = True if type(self.m_items) != type(None) else False
+
+        self.using_memory = True if network_init['memory_init'] != None else False
+
 
 
     def init(self,network_init):
-        meminit = network_init['memory_init']
-        if meminit != None:
-            self.m_items = F.normalize(torch.rand((meminit['memory_size'], meminit['feature_dim']), dtype=torch.float),
-                                  dim=1).cuda()  # Initialize the memory items
+        if self.debug:
+            batch_size = 2
+            workers = 0
+            self.total_epoch = 3
+            crop_size = 296
         else:
-            self.m_items = None
-
-
+            batch_size = self.train_size
+            workers = len(self.source) * 4
         kwargs = network_init
         self.backbone = nn.DataParallel(self.network(**kwargs)).cuda()
         kwargs.update({'pretrained': False})
         self.updated_net = nn.DataParallel(self.network(**kwargs)).cuda()
         self.ce = nn.CrossEntropyLoss(ignore_index=-1)
         self.nim = NaturalImageMeasure(nclass=19)
-        if self.debug:
-            batch_size = 2
-            workers = 0
-            self.total_epoch = 3
-        else:
-            batch_size = self.train_size
-            workers = len(self.source) * 4
+
 
         dataloader = functools.partial(DataLoader, num_workers=workers, pin_memory=True, batch_size=batch_size, shuffle=True)
-        self.train_loader = dataloader(self.dataset(mode='train', domains=self.source, force_cache=True))
+        self.train_loader = dataloader(self.dataset(mode='train', domains=self.source, force_cache=True,crop_size=crop_size))
 
         dataloader = functools.partial(DataLoader, num_workers=workers, pin_memory=True, batch_size=self.test_size, shuffle=False)
-        self.source_val_loader = dataloader(self.dataset(mode='val', domains=self.source, force_cache=True))
+        self.source_val_loader = dataloader(self.dataset(mode='val', domains=self.source, force_cache=True,crop_size=crop_size))
 
         target_dataset, folder = get_dataset(self.target)
         self.target_loader = dataloader(target_dataset(root=ROOT + folder, mode='val'))
@@ -116,16 +115,14 @@ class MetaFrameWork(object):
         meta_train_imgs = imgs.view(-1, C, H, W)
         meta_train_targets = targets.view(-1, 1, H, W)
 
-
-        in_cpt_loss = torch.zeros(1).cuda()
-        in_sep_loss = torch.zeros(1).cuda()
-
+        tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
         if self.using_memory:
-            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs,keys = self.m_items)
-            in_sep_loss = tr_mem_output.pop(-1)
-            in_cpt_loss = tr_mem_output.pop(-1)
+            in_sep_loss = tr_mem_output[3]
+            in_cpt_loss = tr_mem_output[2]
         else:
-            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
+            in_cpt_loss = torch.zeros(1).cuda()
+            in_sep_loss = torch.zeros(1).cuda()
+
         tr_logits = tr_net_output[0]
         tr_logits = make_same_size(tr_logits, meta_train_targets)
         in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
@@ -142,6 +139,17 @@ class MetaFrameWork(object):
         ds_loss.backward()
         self.opt_old.step()
         self.scheduler_old.step(epoch, it)
+
+        # memory update.
+        if self.using_memory:
+            if self.mem_after_update: # memory updated by Et+1 encoder
+                self.backbone.eval()
+                with torch.no_grad():
+                    self.backbone.module.update_memory(self.backbone(meta_train_imgs)[0][-1])
+                self.backbone.train()
+            else: # memory updated by mem_prime
+                self.backbone.module.update_memory(tr_net_output[-1])
+
         losses = {
             'dg': 0,
             'ds': ds_loss.item()
@@ -171,18 +179,19 @@ class MetaFrameWork(object):
         meta_test_targets = targets[:, test_idx].reshape(-1, 1, H, W)
 
         # Meta-Train
-        in_cpt_loss = torch.zeros(1).cuda()
-        in_sep_loss = torch.zeros(1).cuda()
 
+        tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
         if self.using_memory:
-            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs,keys = self.m_items)
-            in_sep_loss = tr_mem_output.pop(-1)
-            in_cpt_loss = tr_mem_output.pop(-1)
+            in_sep_loss = tr_mem_output[3]
+            in_cpt_loss = tr_mem_output[2]
         else:
-            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
+            in_cpt_loss = torch.zeros(1).cuda()
+            in_sep_loss = torch.zeros(1).cuda()
+
         tr_logits = tr_net_output[0]
         tr_logits = make_same_size(tr_logits, meta_train_targets)
         in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
+
         if self.no_inner_memloss:
             ds_loss = in_seg_loss
         else:
@@ -191,18 +200,23 @@ class MetaFrameWork(object):
         # Update new network
         self.opt_old.zero_grad()
         ds_loss.backward(retain_graph=True)
-        updated_net = get_updated_network(self.backbone, self.updated_net, self.inner_update_lr).train().cuda()
+        self.updated_net = get_updated_network(self.backbone, self.updated_net, self.inner_update_lr).train().cuda()
+        # synchronize memory
+        self.updated_net.module.m_items = self.backbone.module.m_items
+
+        # update inner updated network's memory using Et features
+        with torch.no_grad():
+            mem_prime = self.updated_net.module.update_memory(tr_net_output[-1])
+
 
         # Meta-Test
-
-        out_cpt_loss = torch.zeros(1).cuda()
-        out_sep_loss = torch.zeros(1).cuda()
+        te_net_output, te_mem_output = self.updated_net(meta_test_imgs)
         if self.using_memory:
-            te_net_output, te_mem_output = updated_net(meta_test_imgs,keys = self.m_items,write=False)
-            out_sep_loss = te_mem_output.pop(-1)
-            out_cpt_loss = te_mem_output.pop(-1)
+            out_sep_loss = te_mem_output[3]
+            out_cpt_loss = te_mem_output[2]
         else:
-            te_net_output, te_mem_output = updated_net(meta_test_imgs)
+            out_cpt_loss = torch.zeros(1).cuda()
+            out_sep_loss = torch.zeros(1).cuda()
 
         te_logits = te_net_output[0]
         te_logits = make_same_size(te_logits, meta_test_targets)
@@ -221,6 +235,16 @@ class MetaFrameWork(object):
         self.opt_old.step()
         self.scheduler_old.step(epoch, it)
 
+        # memory update.
+        if self.using_memory:
+            if self.mem_after_update: # memory updated by Et+1 encoder
+                self.backbone.eval()
+                with torch.no_grad():
+                    tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
+                    self.backbone.module.update_memory(tr_net_output[-1])
+                self.backbone.train()
+            else: # memory updated by mem_prime
+                self.backbone.module.m_items = mem_prime
 
         losses = {
             'dg': dg_loss.item(),
@@ -285,6 +309,56 @@ class MetaFrameWork(object):
         self.log('Best origin acc : \n  city : {}, origin : {}, epoch : {}\n'.format(
             self.best_source_acc_target, self.best_source_acc, self.best_source_epoch))
 
+    def draw_tsne_domcls(self, path, ):
+        self.load(path)
+        self.backbone.eval()
+        with torch.no_grad():
+            for p, img, target in self.train_loader:
+                img, target = to_cuda(get_img_target(img, target))
+                if self.using_memory:
+                    outputs = self.backbone(img,self.m_items,write=False)
+                    fea = outputs[0][-1]
+                    updated_fea = outputs[1][3]
+                else:
+                    outputs = self.backbone(img)
+                    fea = outputs[0][-1]
+                logits = outputs[0]
+                self.nim(logits, target)
+        self.log('\nNormal validation : {}\n'.format(self.nim.get_acc()))
+        if hasattr(dataset.dataset, 'format_class_iou'):
+            self.log(dataset.dataset.format_class_iou(self.nim.get_class_acc()[0]) + '\n')
+        return self.nim.get_acc()[0]
+        imgs, targets = inputs
+        B, D, C, H, W = imgs.size()
+        split_idx = np.random.permutation(D)
+        i = np.random.randint(1, D)
+        train_idx = split_idx[:i]
+        test_idx = split_idx[i:]
+        # train_idx = split_idx[:D // 2]
+        # test_idx = split_idx[D // 2:]
+
+        # self.print(split_idx, B, D, C, H, W)'
+        meta_train_imgs = imgs[:, train_idx].reshape(-1, C, H, W)
+        meta_train_targets = targets[:, train_idx].reshape(-1, 1, H, W)
+        meta_test_imgs = imgs[:, test_idx].reshape(-1, C, H, W)
+        meta_test_targets = targets[:, test_idx].reshape(-1, 1, H, W)
+
+        # Meta-Train
+        in_cpt_loss = torch.zeros(1).cuda()
+        in_sep_loss = torch.zeros(1).cuda()
+
+        if self.using_memory:
+            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs,keys = self.m_items)
+            in_sep_loss = tr_mem_output.pop(-1)
+            in_cpt_loss = tr_mem_output.pop(-1)
+        else:
+            tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
+            for it, (paths, imgs, target) in enumerate(self.train_loader):
+                meta = (it + 1) % self.train_num == 0
+                if meta:
+                    losses, acc, lr = self.meta_train(epoch - 1, it, to_cuda([imgs, target]))
+
+
     def save_best(self, city_acc, epoch):
         self.writer.add_scalar('acc/citys', city_acc, epoch)
         if not self.no_source_test:
@@ -313,10 +387,7 @@ class MetaFrameWork(object):
             self.nim.set_max_len(len(dataset))
             for p, img, target in dataset:
                 img, target = to_cuda(get_img_target(img, target))
-                if self.using_memory:
-                    outputs = self.backbone(img,self.m_items,write=False)[0]
-                else:
-                    outputs = self.backbone(img)[0]
+                outputs = self.backbone(img)[0]
                 logits = outputs[0]
                 self.nim(logits, target)
         self.log('\nNormal validation : {}\n'.format(self.nim.get_acc()))
@@ -350,38 +421,38 @@ class MetaFrameWork(object):
             self.log(loader.dataset.format_class_iou(self.nim.get_class_acc()[0]) + '\n')
         return self.nim.get_acc()[0]
 
-    def predict_target(self, load_path='best_city', color=False, train=False, output_path='predictions'):
-        self.load(load_path)
-        import skimage.io as skio
-        dataset = self.target_test_loader
-
-        output_path = Path(self.save_path / output_path)
-        output_path.mkdir(exist_ok=True)
-
-        if train:
-            self.backbone.module.remove_dropout()
-            self.backbone.train()
-        else:
-            self.backbone.eval()
-
-        with torch.no_grad():
-            self.nim.clear_cache()
-            self.nim.set_max_len(len(dataset))
-            for names, img, target in tqdm(dataset):
-                img = to_cuda(img)
-                logits = self.backbone(img)[0]
-                logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
-                preds = get_prediction(logits).cpu().numpy()
-                if color:
-                    trainId_preds = preds
-                else:
-                    trainId_preds = dataset.dataset.predict(preds)
-
-                for pred, name in zip(trainId_preds, names):
-                    file_name = name.split('/')[-1]
-                    if color:
-                        pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
-                    skio.imsave(str(output_path / file_name), pred)
+    # def predict_target(self, load_path='best_city', color=False, train=False, output_path='predictions'):
+    #     self.load(load_path)
+    #     import skimage.io as skio
+    #     dataset = self.target_test_loader
+    #
+    #     output_path = Path(self.save_path / output_path)
+    #     output_path.mkdir(exist_ok=True)
+    #
+    #     if train:
+    #         self.backbone.module.remove_dropout()
+    #         self.backbone.train()
+    #     else:
+    #         self.backbone.eval()
+    #
+    #     with torch.no_grad():
+    #         self.nim.clear_cache()
+    #         self.nim.set_max_len(len(dataset))
+    #         for names, img, target in tqdm(dataset):
+    #             img = to_cuda(img)
+    #             logits = self.backbone(img)[0]
+    #             logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
+    #             preds = get_prediction(logits).cpu().numpy()
+    #             if color:
+    #                 trainId_preds = preds
+    #             else:
+    #                 trainId_preds = dataset.dataset.predict(preds)
+    #
+    #             for pred, name in zip(trainId_preds, names):
+    #                 file_name = name.split('/')[-1]
+    #                 if color:
+    #                     pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
+    #                 skio.imsave(str(output_path / file_name), pred)
 
     def get_string(self, epoch, it, loss_meters, acc_meters, lr, meta):
         string = '\repoch {:4}, iter : {:4}, '.format(epoch, it)
@@ -415,7 +486,7 @@ class MetaFrameWork(object):
             'epoch': self.epoch + 1,
             'best': self.best_target_acc,
             'info': info,
-            'm_items': self.m_items
+            'm_items': self.backbone.module.m_items
         }
         self.print('Saving epoch : {}'.format(self.epoch))
         torch.save(dicts, self.save_path / '{}.pth'.format(name))
@@ -444,6 +515,9 @@ class MetaFrameWork(object):
             if 'info' in dicts:
                 self.best_source_acc, self.best_source_acc_target, self.best_source_epoch, \
                 self.best_target_acc, self.best_target_acc_source, self.best_target_epoch = dicts['info']
+            if 'm_items' in dicts:
+                self.backbone.module.m_items = dicts['m_items'].cuda()
+                print('memory items updated')
             self.log('Loaded from {}, next epoch : {}, best_target : {}, best_epoch : {}\n'
                      .format(str(path), self.epoch, self.best_target_acc, self.best_target_epoch))
             return True
@@ -453,101 +527,56 @@ class MetaFrameWork(object):
             self.epoch = 1
             return False
 
-    def predict_target(self, load_path='best_city', overlay=False, color=False, train=False, output_path='predictions',
-                       inputimgname=None):
+    def predict_target(self, load_path='best_city', output_path='predictions',savenum = 10,inputimgname=None):
         self.load(load_path)
+
         import skimage.io as skio
-        dataset = self.target_test_loader
+        dataset = self.target_loader
+        self.target_loader.dataset.transforms = None
 
         output_path = Path(self.save_path / output_path)
         output_path.mkdir(exist_ok=True)
+        overlay_rate = 0.7
 
-        if train:
-            self.backbone.module.remove_dropout()
-            self.backbone.train()  # 이것으로 할 경우 moving average가 동작하여 statistics를 업데이트 하고, learnable parameter에 대한 정보를 수집한다.
-            # 그런데 torch.no_grad()에 의해 train==True라고 해도 learnable parameter는 update 되지 않음.
-        else:
-            self.backbone.eval()  # 이것으로 할 경우 moving average가 동작하지 않으며 statistic을 업데이트하지 않는다.
+        self.backbone.eval()
+
 
         with torch.no_grad():
             self.nim.clear_cache()
             self.nim.set_max_len(len(dataset))
-            savenum = self.num_of_prediction
-            count = 0
-            if inputimgname is not None:  # 특정 이미지에 대해서만 prediction하는 코드.
-                for names, img, target in tqdm(dataset):
-                    temp = False
+            count = 1
+            for names, img, target in tqdm(dataset):
+                temp = False
+                if inputimgname is not None:  # 특정 이미지에 대해서만 prediction하는 코드.
                     for name in names:
                         if inputimgname == name.split('/')[-1]:
                             temp = True
-                    if temp:
-                        img = to_cuda(img)
-                        logits = self.backbone(img)[0]
-                        logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
-                        preds = get_prediction(logits).cpu().numpy()
-                        if color:
-                            trainId_preds = preds
-                        else:
-                            trainId_preds = dataset.dataset.predict(preds)
+                elif count <= savenum:
+                    temp = True
+                else:
+                    break
 
-                        if overlay and color:
-                            for pred, name, onelabel in zip(trainId_preds, names, target):
-                                if inputimgname == name.split('/')[-1]:
-                                    filename = name.split('/')[-1]
-                                    pred_file_name = os.path.splitext(filename)[0] + '_pred.jpg'
-                                    label_file_name = os.path.splitext(filename)[0] + '_label.jpg'
-                                    pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
-                                    ori_img = skio.imread(name).astype(np.uint8)
-                                    onelabel = class_map_2_color_map(onelabel.cpu().numpy().squeeze()).transpose(1, 2,
-                                                                                                                 0).astype(
-                                        np.uint8)
-                                    skio.imsave(str(output_path / pred_file_name), ori_img + 0.4 * pred)
-                                    skio.imsave(str(output_path / label_file_name), ori_img + 0.4 * onelabel)
-                                    break
-                        else:
-                            for pred, name in zip(trainId_preds, names):
-                                if inputimgname == name.split('/')[-1]:
-                                    file_name = name.split('/')[-1]
-                                    if color:
-                                        pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
-                                    skio.imsave(str(output_path / file_name), pred)
-                                    break
+                if temp:
+                    img = to_cuda(img)
+                    logits = self.backbone(img)[0][0]
+                    logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
+                    trainId_preds = get_prediction(logits).cpu().numpy()
+                    for pred, name, onelabel in zip(trainId_preds, names, target):
+                        filename = name.split('/')[-1]
+                        pred_file_name = os.path.splitext(filename)[0] + '_pred.jpg'
+                        label_file_name = os.path.splitext(filename)[0] + '_label.jpg'
+                        pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
+                        ori_img = skio.imread(name).astype(np.uint8)
+                        onelabel = class_map_2_color_map(onelabel.cpu().numpy().squeeze()).transpose(1, 2, 0).astype(
+                            np.uint8)
+                        skio.imsave(str(output_path / pred_file_name),
+                                    (1 - overlay_rate) * ori_img + overlay_rate * pred)
+                        skio.imsave(str(output_path / label_file_name),
+                                    (1 - overlay_rate) * ori_img + overlay_rate * onelabel)
+                    count = count + 1
+                else:
+                    continue
 
-
-            else:
-                for names, img, target in tqdm(dataset):
-                    if count <= savenum:
-                        img = to_cuda(img)
-                        logits = self.backbone(img)[0]
-                        logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
-                        preds = get_prediction(logits).cpu().numpy()
-                        if color:
-                            trainId_preds = preds
-                        else:
-                            trainId_preds = dataset.dataset.predict(preds)
-
-                        if overlay and color:
-                            for pred, name, onelabel in zip(trainId_preds, names, target):
-                                filename = name.split('/')[-1]
-                                pred_file_name = os.path.splitext(filename)[0] + '_pred.jpg'
-                                label_file_name = os.path.splitext(filename)[0] + '_label.jpg'
-                                pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
-                                ori_img = skio.imread(name).astype(np.uint8)
-                                onelabel = class_map_2_color_map(onelabel.cpu().numpy().squeeze()).transpose(1, 2,
-                                                                                                             0).astype(
-                                    np.uint8)
-
-                                skio.imsave(str(output_path / pred_file_name), ori_img + 0.4 * pred)
-                                skio.imsave(str(output_path / label_file_name), ori_img + 0.4 * onelabel)
-                        else:
-                            for pred, name in zip(trainId_preds, names):
-                                file_name = name.split('/')[-1]
-                                if color:
-                                    pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
-                                skio.imsave(str(output_path / file_name), pred)
-                        count = count + 1
-                    else:
-                        break
 
     def draw_tsne(self, inputimgname, load_path='best_city', output_path='tsne', perplexities=[30]):
         self.load(load_path)

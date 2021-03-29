@@ -141,44 +141,28 @@ class Memory(nn.Module):
         
         return score_query, score_memory
     
-    def forward(self, query, keys, train=True):
+    def forward(self, query, keys): # doesn't update memory in forward
 
         batch_size, dims,h,w = query.size() # b X d X h X w
         query = F.normalize(query, dim=1)
         query = query.permute(0,2,3,1) # b X h X w X d
-        
-        #train
-        if train:
-            #gathering loss
-            gathering_loss = self.gather_loss(query,keys, train)
-            #spreading_loss
-            spreading_loss = self.spread_loss(query, keys, train)
-            # read
-            updated_query, softmax_score_query,softmax_score_memory = self.read(query, keys)
-            #update
-            updated_memory = self.update(query, keys, train)
-            
-            return updated_query, updated_memory, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss
-        
-        #test
-        else:
-            #gathering loss
-            gathering_loss = self.gather_loss(query,keys, train)
-            # spreading_loss
-            spreading_loss = self.spread_loss(query, keys, train)
-            # read
-            updated_query, softmax_score_query,softmax_score_memory = self.read(query, keys)
-            #update
-            updated_memory = keys
 
-            return updated_query, updated_memory, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss
+        #gathering loss
+        gathering_loss = self.gather_loss(query,keys)
+        #spreading_loss
+        spreading_loss = self.spread_loss(query, keys)
+        # read
+        updated_query, softmax_score_query,softmax_score_memory = self.read(query, keys)
+
+        return updated_query, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss
 
 
-
-        
-        
     
-    def update(self, query, keys,train):
+    def update(self, query, keys,train=True):
+
+        batch_size, dims, h, w = query.size()
+        query = F.normalize(query, dim=1)
+        query = query.permute(0,2,3,1) # b X h X w X d
         
         batch_size, h,w,dims = query.size() # b X h X w X d 
         
@@ -189,15 +173,14 @@ class Memory(nn.Module):
         _, gathering_indices = torch.topk(softmax_score_memory, 1, dim=1)
         _, updating_indices = torch.topk(softmax_score_query, 1, dim=0)
         
-        if train:
-            # top-1 queries (of each memory) update (weighted sum) & random pick 
-            query_update = self.get_update_query(keys, gathering_indices, updating_indices, softmax_score_query, query_reshape,train)
-            updated_memory = F.normalize(query_update + keys, dim=1)
+        # top-1 queries (of each memory) update (weighted sum) & random pick
+        query_update = self.get_update_query(keys, gathering_indices, updating_indices, softmax_score_query, query_reshape,train)
+        updated_memory = F.normalize(query_update + keys, dim=1)
         
-        else:
-            # only weighted sum update when test 
-            query_update = self.get_update_query(keys, gathering_indices, updating_indices, softmax_score_query, query_reshape, train)
-            updated_memory = F.normalize(query_update + keys, dim=1)
+        # else:
+        #     # only weighted sum update when test
+        #     query_update = self.get_update_query(keys, gathering_indices, updating_indices, softmax_score_query, query_reshape, train)
+        #     updated_memory = F.normalize(query_update + keys, dim=1)
         
         # top-1 update
         #query_update = query_reshape[updating_indices][0]
@@ -214,7 +197,7 @@ class Memory(nn.Module):
                 
         return pointwise_loss
         
-    def spread_loss(self,query, keys, train):
+    def spread_loss(self,query, keys):
         batch_size, h,w,dims = query.size() # b X h X w X d
 
         loss = torch.nn.TripletMarginLoss(margin=1.0)
@@ -233,7 +216,7 @@ class Memory(nn.Module):
 
         return spreading_loss
         
-    def gather_loss(self, query, keys, train):
+    def gather_loss(self, query, keys):
         
         batch_size, h,w,dims = query.size() # b X h X w X d
 

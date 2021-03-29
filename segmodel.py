@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 from network.nets.deeplabv3_plus import DeepLab
 from network.nets.Memory import Memory
@@ -45,21 +46,25 @@ class MemDeeplabv3plus(DeepLab):
 
         if type(memory_init) == dict:
             self.memory = Memory(**memory_init)
+            self.m_items = F.normalize(torch.rand((memory_init['memory_size'], memory_init['feature_dim']), dtype=torch.float),
+                                       dim=1).cuda()  # Initialize the memory items
+        else:
+            self.m_items = None
 
 
-    def forward(self, x,keys=None, write=True):
+    def forward(self, x):
         H, W = x.size(2), x.size(3)
         x, low_level_features = self.backbone(x)
         fea = self.ASSP(x)
         features = fea.clone().detach()
         mem_output = []
         # memory
-        if type(keys) != type(None):
+        if type(self.m_items) != type(None):
 
-            fea, keys, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss = self.memory(
-                fea, keys, write)
+            fea, softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss = self.memory(
+                fea, self.m_items)
             updated_features = fea.clone().detach()
-            mem_output = [keys, softmax_score_query, softmax_score_memory, updated_features,gathering_loss, spreading_loss]
+            mem_output = [softmax_score_query, softmax_score_memory, gathering_loss, spreading_loss,updated_features]
 
         fea = self.decoder(fea, low_level_features)
 
@@ -67,6 +72,16 @@ class MemDeeplabv3plus(DeepLab):
 
         return ([output,features], mem_output)
 
+
+    def update_memory(self,query):
+        # update
+        if type(self.m_items) != type(None):
+            self.m_items = self.memory.update(query, self.m_items)
+
+        return self.m_items
+
+    def get_memory(self):
+        return self.m_items
 
     def not_track(self, module=None):
         if module is None:
