@@ -78,6 +78,8 @@ class MetaFrameWork(object):
         else:
             batch_size = self.train_size
             workers = len(self.source) * 4
+            crop_size = 600
+
         kwargs = network_init
         self.backbone = nn.DataParallel(self.network(**kwargs)).cuda()
         kwargs.update({'pretrained': False})
