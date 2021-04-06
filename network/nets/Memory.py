@@ -53,14 +53,16 @@ def MemoryLoss(memory):
 
 
 class Memory(nn.Module):
-    def __init__(self, memory_size, feature_dim, key_dim,  temp_update, temp_gather):
+    def __init__(self, memory_size, feature_dim, key_dim,  temp_update, temp_gather,supervised_mem,momentum):
         super(Memory, self).__init__()
         # Constants
-        self.memory_size = memory_size
+        self.memory_size = memory_size # when supervised memory, set same number with class num(19)
         self.feature_dim = feature_dim
         self.key_dim = key_dim
         self.temp_update = temp_update
         self.temp_gather = temp_gather
+        self.supervised_mem = supervised_mem
+        self.momentum = momentum
         self.output = nn.Sequential( # refer object contextual represenation network fusion layer...
                 nn.Conv2d(512, 256, kernel_size=1, stride=1, bias=False),
                 nn.BatchNorm2d(256),
@@ -91,43 +93,28 @@ class Memory(nn.Module):
             
         return torch.tensor(output)
     
-    def get_update_query(self, mem, max_indices, update_indices, score, query, train):
+    def get_update_query(self, mem, max_indices, update_indices, score, query):
         
         m, d = mem.size()
-        if train:
-            query_update = torch.zeros((m,d)).cuda()
-            random_update = torch.zeros((m,d)).cuda()
-            for i in range(m):
-                idx = torch.nonzero(max_indices.squeeze(1)==i)
-                a, _ = idx.size()
-                #ex = update_indices[0][i]
-                if a != 0:
-                    #random_idx = torch.randperm(a)[0]
-                    #idx = idx[idx != ex]
+        query_update = torch.zeros((m,d)).cuda()
+        random_update = torch.zeros((m,d)).cuda()
+        for i in range(m):
+            idx = torch.nonzero(max_indices.squeeze(1)==i)
+            a, _ = idx.size()
+            #ex = update_indices[0][i]
+            if a != 0:
+                #random_idx = torch.randperm(a)[0]
+                #idx = idx[idx != ex]
 #                     query_update[i] = torch.sum(query[idx].squeeze(1), dim=0)
-                    query_update[i] = torch.sum(((score[idx,i] / torch.max(score[:,i])) *query[idx].squeeze(1)), dim=0)
-                    #random_update[i] = query[random_idx] * (score[random_idx,i] / torch.max(score[:,i]))
-                else:
-                    query_update[i] = 0 
-                    #random_update[i] = 0
+                query_update[i] = torch.sum(((score[idx,i] / torch.max(score[:,i])) *query[idx].squeeze(1)), dim=0)
+                #random_update[i] = query[random_idx] * (score[random_idx,i] / torch.max(score[:,i]))
+            else:
+                query_update[i] = 0
+                #random_update[i] = 0
         
        
             return query_update 
-    
-        else:
-            query_update = torch.zeros((m,d)).cuda()
-            for i in range(m):
-                idx = torch.nonzero(max_indices.squeeze(1)==i)
-                a, _ = idx.size()
-                #ex = update_indices[0][i]
-                if a != 0:
-                    #idx = idx[idx != ex]
-                    query_update[i] = torch.sum(((score[idx,i] / torch.max(score[:,i])) *query[idx].squeeze(1)), dim=0)
-#                     query_update[i] = torch.sum(query[idx].squeeze(1), dim=0)
-                else:
-                    query_update[i] = 0 
-            
-            return query_update
+
 
     def get_score(self, mem, query):
         bs, h,w,d = query.size()
@@ -158,36 +145,50 @@ class Memory(nn.Module):
 
 
     
-    def update(self, query, keys,train=True):
+    def update(self, query, keys,mask = None):
 
         batch_size, dims, h, w = query.size()
-        query = F.normalize(query, dim=1)
-        query = query.permute(0,2,3,1) # b X h X w X d
-        
-        batch_size, h,w,dims = query.size() # b X h X w X d 
-        
-        softmax_score_query, softmax_score_memory = self.get_score(keys, query)
-        
-        query_reshape = query.contiguous().view(batch_size*h*w, dims)
-        
-        _, gathering_indices = torch.topk(softmax_score_memory, 1, dim=1)
-        _, updating_indices = torch.topk(softmax_score_query, 1, dim=0)
-        
-        # top-1 queries (of each memory) update (weighted sum) & random pick
-        query_update = self.get_update_query(keys, gathering_indices, updating_indices, softmax_score_query, query_reshape,train)
-        updated_memory = F.normalize(query_update + keys, dim=1)
-        
-        # else:
-        #     # only weighted sum update when test
-        #     query_update = self.get_update_query(keys, gathering_indices, updating_indices, softmax_score_query, query_reshape, train)
-        #     updated_memory = F.normalize(query_update + keys, dim=1)
-        
-        # top-1 update
-        #query_update = query_reshape[updating_indices][0]
-        #updated_memory = F.normalize(query_update + keys, dim=1)
+        if self.supervised_mem: # masking memory model
+            query = F.interpolate(query, mask.size()[2:], mode='bilinear', align_corners=True)
+            query = query.view(batch_size,dims,-1)
+            mask[mask == -1] = self.memory_size
+            mask = F.one_hot(mask, num_classes=self.memory_size + 1).squeeze()
+            mask = mask.view(batch_size,-1,self.memory_size + 1).type(torch.float32)
+            denominator = mask.sum(1).unsqueeze(dim=1)
+            denominator[denominator==0] = 1 # for nan
+            nominator = torch.matmul(query,mask)
+            prototypes = torch.div(nominator,denominator)
+            prototypes = torch.t(prototypes[:,:,:self.memory_size].mean(0)) # batchwise mean.
+            updated_memory = self.momentum * keys + (1-self.momentum)*prototypes # memory momentum update
+
+        else:
+            query = F.normalize(query, dim=1)
+            query = query.permute(0,2,3,1) # b X h X w X d
+
+            batch_size, h,w,dims = query.size() # b X h X w X d
+
+            softmax_score_query, softmax_score_memory = self.get_score(keys, query)
+
+            query_reshape = query.contiguous().view(batch_size*h*w, dims)
+
+            _, gathering_indices = torch.topk(softmax_score_memory, 1, dim=1)
+            _, updating_indices = torch.topk(softmax_score_query, 1, dim=0)
+
+            # top-1 queries (of each memory) update (weighted sum) & random pick
+            query_update = self.get_update_query(keys, gathering_indices, updating_indices, softmax_score_query, query_reshape)
+            updated_memory = F.normalize(query_update + keys, dim=1)
+
+            # else:
+            #     # only weighted sum update when test
+            #     query_update = self.get_update_query(keys, gathering_indices, updating_indices, softmax_score_query, query_reshape, train)
+            #     updated_memory = F.normalize(query_update + keys, dim=1)
+
+            # top-1 update
+            #query_update = query_reshape[updating_indices][0]
+            #updated_memory = F.normalize(query_update + keys, dim=1)
       
         return updated_memory.detach()
-        
+
         
     def pointwise_gather_loss(self, query_reshape, keys, gathering_indices, train):
         n,dims = query_reshape.size() # (b X h X w) X d

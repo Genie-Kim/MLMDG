@@ -73,10 +73,10 @@ class MemDeeplabv3plus(DeepLab):
         return ([output,features], mem_output)
 
 
-    def update_memory(self,query):
+    def update_memory(self,query,mask=None):
         # update
         if type(self.m_items) != type(None):
-            self.m_items = self.memory.update(query, self.m_items)
+            self.m_items = self.memory.update(query, self.m_items,mask)
 
         return self.m_items
 

@@ -6,6 +6,7 @@ from tqdm import tqdm
 from dataset.dg_dataset import *
 from network.components.customized_evaluate import NaturalImageMeasure, MeterDicts
 from network.components.schedulers import PolyLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import segmodel
 from utils.nn_utils import *
 from utils.nn_utils import get_updated_network, get_logger, get_img_target
@@ -22,11 +23,12 @@ np.random.seed(seed)
 class MetaFrameWork(object):
     def __init__(self,network_init, name='normal_all', train_num=1, source='GSIM',
                  target='C', network='MemDeeplabv3plus', resume=True, dataset=DGMetaDataSets,
-                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=True,debug=False,lamb_cpt = 0.01,lamb_sep = 0.01,no_outer_memloss = False,no_inner_memloss = False,mem_after_update=True):
+                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=False,debug=False,lamb_cpt = 0.01,lamb_sep = 0.01,no_outer_memloss = False,no_inner_memloss = False,mem_after_update=True):
         super(MetaFrameWork, self).__init__()
         self.no_source_test = no_source_test
         self.train_num = train_num
-        self.exp_name = name
+        self.name = name
+        self.exp_name = 'experiment/' + name
         self.resume = resume
 
         self.inner_update_lr = inner_lr
@@ -100,6 +102,7 @@ class MetaFrameWork(object):
 
         self.opt_old = SGD(self.backbone.parameters(), lr=self.outer_update_lr, momentum=0.9, weight_decay=5e-4)
         self.scheduler_old = PolyLR(self.opt_old, self.total_epoch, len(self.train_loader), 0, True, power=0.9)
+        # self.scheduler_old = ReduceLROnPlateau(self.opt_old,factor=0.1, patience=10)
 
         self.logger = get_logger('train', self.exp_name)
         self.log('exp_name : {}, train_num = {}, source domains = {}, target_domain = {}, lr : inner = {}, outer = {},'
@@ -208,7 +211,7 @@ class MetaFrameWork(object):
 
         # update inner updated network's memory using Et features
         with torch.no_grad():
-            mem_prime = self.updated_net.module.update_memory(tr_net_output[-1])
+            mem_prime = self.updated_net.module.update_memory(tr_net_output[-1],meta_train_targets)
 
 
         # Meta-Test
@@ -269,7 +272,8 @@ class MetaFrameWork(object):
 
     def do_train(self):
         if self.resume:
-            self.load()
+            self.load('best_city')
+            # self.load()
 
         self.writer = SummaryWriter(str(self.save_path / 'tensorboard'), filename_suffix=time.strftime('_%Y-%m-%d_%H-%M-%S'))
         self.log('Start epoch : {}\n'.format(self.epoch))

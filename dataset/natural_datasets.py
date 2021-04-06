@@ -169,7 +169,7 @@ class CityScapesDataSet(BaseDataSet):
                                     # test_name='val',
                                     img_filter='png', force_cache=self.force_cache)
         train, dev, test = splitter.get_train_dev_test_path()
-        return train, dev, test
+        return train, dev, dev
 
     def _class_to_index(self, mask):
         # assert the values
