@@ -25,7 +25,7 @@ parser.add_argument('--mem_after_update', action='store_true', help='memory loss
 parser.add_argument('--lamb_cpt', type=float, default=1e-1, help='inner learning rate of meta update')
 parser.add_argument('--lamb_sep', type=float, default=1e-1, help='outer learning rate of network update')
 parser.add_argument('--train-size', type=int, default=2, help='the batch size of training')
-parser.add_argument('--test-size', type=int, default=3, help='the batch size of evaluation')
+parser.add_argument('--test-size', type=int, default=2, help='the batch size of evaluation')
 parser.add_argument('--train-num', type=int, default=1,
                     help='every ? iteration do one meta train, 1 is meta train, 10000000 is normal supervised learning.')
 
@@ -76,18 +76,19 @@ def train():
 def draw_tsne():
     args = init()
     framework = MetaFrameWork(**args)
-    framework.draw_tsne_domcls()
+    framework.draw_tsne_domcls(perplexities=[30], learning_rate=10, imagenum=1,pthname = 'best_city')
+
 
 def predict():
     args = init()
     framework = MetaFrameWork(**args)
-    framework.predict_target(load_path='best_city', output_path='predictions',savenum = 1,inputimgname=None)
+    framework.predict_target(load_path='best_city', output_path='predictions',savenum = 3,inputimgname=None)
 
 def eval():
     args = init()
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     names = [args['name']]
     targets = args['target']
+    args['target'] = 'C'
     args['name'] = 'tmp'
     framework = MetaFrameWork(**args)
     for name, target in zip(names, targets):
@@ -105,14 +106,14 @@ def eval():
                 np.random.seed(seed)
 
                 framework.log('-' * 20 + ' {} '.format(target) + '-' * 20 + 'seed : '+str(seed) + '\n\n')
-                framework.val(get_target_loader(target, 4, mode='test',shuffle=False))
+                framework.val(get_target_loader(target, args['test_size'], mode='test',shuffle=False))
 
 if __name__ == '__main__':
     # from utils.task import FunctionJob
     # job = FunctionJob([train], gpus=[[1]])
     # job.run(minimum_memory=10000)
     # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    train()
-    # draw_tsne()
+    # train()
+    draw_tsne()
     # predict()
     # eval()

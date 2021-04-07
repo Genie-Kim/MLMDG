@@ -40,8 +40,12 @@ def get_dataset(name):
         return dataset_dicts[name], root_dicts[name]
 
 
-def get_target_loader(name, batch_size, mode='val', **kwargs):
-    dataloader = functools.partial(DataLoader, num_workers=batch_size, pin_memory=True, batch_size=batch_size, **kwargs)
+def get_target_loader(name, batch_size, mode='val', num_workers=None, **kwargs):
+    if type(num_workers) == type(None):
+        num_workers = batch_size
+    else:
+        num_workers = 0
+    dataloader = functools.partial(DataLoader, num_workers=num_workers, pin_memory=True, batch_size=batch_size, **kwargs)
     target_dataset, folder = get_dataset(name)
     target_loader = dataloader(target_dataset(root=ROOT + folder, mode=mode))
     return target_loader

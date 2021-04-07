@@ -23,7 +23,7 @@ class BaseDataSet(Dataset):
         self.force_cache = force_cache
         self.transforms = transform
         self.mode = mode.lower()
-        assert self.mode in ['train', 'test', 'val']
+        assert self.mode in ['train', 'test', 'val', 'full']
 
         self.medical = medical
         self.normalize = medical_image_normalize() if self.medical else natural_image_normalize()
