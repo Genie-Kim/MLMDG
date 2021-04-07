@@ -21,9 +21,12 @@ np.random.seed(seed)
 
 
 class MetaFrameWork(object):
-    def __init__(self,network_init, name='normal_all', train_num=1, source='GSIM',
+    def __init__(self, network_init, name='normal_all', train_num=1, source='GSIM',
                  target='C', network='MemDeeplabv3plus', resume=True, dataset=DGMetaDataSets,
-                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=False,debug=False,lamb_cpt = 0.01,lamb_sep = 0.01,no_outer_memloss = False,no_inner_memloss = False,mem_after_update=True):
+                 inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=False, debug=False,
+                 lamb_cpt=0.01, lamb_sep=0.01, no_outer_memloss=False, no_inner_memloss=False, mem_after_update=True,
+                 lrplateau=True):
+
         super(MetaFrameWork, self).__init__()
         self.no_source_test = no_source_test
         self.train_num = train_num
@@ -64,6 +67,7 @@ class MetaFrameWork(object):
         self.no_outer_memloss = no_outer_memloss # if true, only segmentation loss on outer step.
         self.no_inner_memloss = no_inner_memloss # if true, only segmentation loss on inner step.
         self.mem_after_update = mem_after_update
+        self.lrplateau = lrplateau
 
         self.init(network_init)
 
@@ -101,8 +105,13 @@ class MetaFrameWork(object):
         self.target_test_loader = dataloader(target_dataset(root=ROOT + 'cityscapes', mode='test'))
 
         self.opt_old = SGD(self.backbone.parameters(), lr=self.outer_update_lr, momentum=0.9, weight_decay=5e-4)
-        self.scheduler_old = PolyLR(self.opt_old, self.total_epoch, len(self.train_loader), 0, True, power=0.9)
-        # self.scheduler_old = ReduceLROnPlateau(self.opt_old,factor=0.1, patience=10)
+
+        if self.lrplateau:
+            patience = 10 / self.save_interval
+            self.scheduler_old = ReduceLROnPlateau(self.opt_old, factor=0.1, patience=patience,verbose = True)
+        else:
+            self.scheduler_old = PolyLR(self.opt_old, self.total_epoch, len(self.train_loader), 0, True, power=0.9)
+
 
         self.logger = get_logger('train', self.exp_name)
         self.log('exp_name : {}, train_num = {}, source domains = {}, target_domain = {}, lr : inner = {}, outer = {},'
@@ -143,7 +152,8 @@ class MetaFrameWork(object):
         self.opt_old.zero_grad()
         ds_loss.backward()
         self.opt_old.step()
-        self.scheduler_old.step(epoch, it)
+        if not self.lrplateau:
+            self.scheduler_old.step(epoch, it)
 
         # memory update.
         if self.using_memory:
@@ -162,7 +172,7 @@ class MetaFrameWork(object):
         acc = {
             'iou': self.nim.get_res()[0]
         }
-        return losses, acc, self.scheduler_old.get_lr(epoch, it)[0]
+        return losses, acc, self.opt_old.param_groups[-1]['lr']
 
     def meta_train(self, epoch, it, inputs):
         # imgs : batch x domains x C x H x W
@@ -238,7 +248,8 @@ class MetaFrameWork(object):
         # Update old network
         dg_loss.backward()
         self.opt_old.step()
-        self.scheduler_old.step(epoch, it)
+        if not self.lrplateau:
+            self.scheduler_old.step(epoch, it)
 
         # memory update.
         if self.using_memory:
@@ -268,7 +279,7 @@ class MetaFrameWork(object):
             'iou': self.nim.get_res()[0],
         }
 
-        return losses, acc, self.scheduler_old.get_lr(epoch, it)[0]
+        return losses, acc, self.opt_old.param_groups[-1]['lr']
 
     def do_train(self):
         if self.resume:
@@ -304,7 +315,9 @@ class MetaFrameWork(object):
             # self.save('ckpt')
             if epoch % self.save_interval == 0:
                 with self.test_timer:
-                    city_acc = self.val(self.target_loader)
+                    city_acc, valloss = self.val(self.target_loader)
+                    if self.lrplateau:
+                        self.scheduler_old.step(valloss)
                     self.save_best(city_acc, epoch)
 
             total_duration = self.train_timer.duration + self.test_timer.duration
@@ -368,7 +381,7 @@ class MetaFrameWork(object):
     def save_best(self, city_acc, epoch):
         self.writer.add_scalar('acc/citys', city_acc, epoch)
         if not self.no_source_test:
-            origin_acc = self.val(self.source_val_loader)
+            origin_acc,_ = self.val(self.source_val_loader)
             self.writer.add_scalar('acc/origin', origin_acc, epoch)
         else:
             origin_acc = 0
@@ -391,15 +404,19 @@ class MetaFrameWork(object):
         with torch.no_grad():
             self.nim.clear_cache()
             self.nim.set_max_len(len(dataset))
+            count = 0
+            valloss = 0
             for p, img, target in dataset:
                 img, target = to_cuda(get_img_target(img, target))
                 outputs = self.backbone(img)[0]
                 logits = outputs[0]
+                valloss += self.ce(logits, target[:, 0])
+                count += 1
                 self.nim(logits, target)
         self.log('\nNormal validation : {}\n'.format(self.nim.get_acc()))
         if hasattr(dataset.dataset, 'format_class_iou'):
             self.log(dataset.dataset.format_class_iou(self.nim.get_class_acc()[0]) + '\n')
-        return self.nim.get_acc()[0]
+        return self.nim.get_acc()[0], valloss/count
 
     def target_specific_val(self, loader):
         self.nim.clear_cache()

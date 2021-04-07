@@ -32,6 +32,7 @@ parser.add_argument('--train-num', type=int, default=1,
 parser.add_argument('--network', default='MemDeeplabv3plus', help='network for DG')
 parser.add_argument('--memory', action='store_true', help='use memory')
 parser.add_argument('--supervised_mem', action='store_true', help='use supervised memory')
+parser.add_argument('--lrplateau', action='store_true', help='use supervised memory')
 
 
 
@@ -110,6 +111,7 @@ if __name__ == '__main__':
     # from utils.task import FunctionJob
     # job = FunctionJob([train], gpus=[[1]])
     # job.run(minimum_memory=10000)
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     train()
     # draw_tsne()
     # predict()
