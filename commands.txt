@@ -1,7 +1,7 @@
 
 exp_1e1_mem_mldg_after_plate
 
-CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network MemDeeplabv3plus --lamb_cpt 0.1 --memory --lamb_sep 0.1 --name exp_1e1_mem_mldg_after_plate --outer-lr 0.1 --mem_after_update --lrplate &> exp_1e1_mem_mldg_after_plate.out &
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network MemDeeplabv3plus --lamb_cpt 0.1 --memory --lamb_sep 0.1 --name exp_1e1_mem_mldg_after_plate --mem_after_update --sche lrplate &> exp_1e1_mem_mldg_after_plate.out &
 
 exp_1e1_mem_mldg_after
 
@@ -18,17 +18,25 @@ CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network MemDeeplabv3p
 
 
 
-exp_1e1_nomem_mldg
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --lamb_cpt 0.1 --lamb_sep 0.1 --name exp_1e1_nomem_mldg &> exp_1e1_nomem_mldg.out &
+exp_nomem_mldg
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --name exp_nomem_mldg &> exp_nomem_mldg.out &
 
-
+exp_nomem_mldg_cosine
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --name exp_nomem_mldg_cosine --sche cosine &> exp_nomem_mldg_cosine.out &
 
 exp_nomem_agg_plate
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --name exp_nomem_agg_plate --train-num 10000000 --lrplateau --outer-lr 0.1 &> exp_nomem_agg_plate.out &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --name exp_nomem_agg_plate --train-num 10000000 --sche lrplate &> exp_nomem_agg_plate.out &
 
 
 exp_nomem_agg
 CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --name exp_nomem_agg --train-num 10000000 &> exp_nomem_agg.out &
 
+exp_1e2_mem_mldg_after_cosine
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network MemDeeplabv3plus --lamb_cpt 0.1 --memory --lamb_sep 0.2 --name exp_1e2_mem_mldg_after_cosine --mem_after_update --sche cosine &> exp_1e2_mem_mldg_after_cosine.out &
 
+exp_mem_agg_cosine
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --name exp_mem_agg_cosine --train-num 10000000 --memory --sche cosine &> exp_mem_agg_cosine.out &
+
+exp_nomem_agg_cosine
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --name exp_nomem_agg_cosine --train-num 10000000 --sche cosine &> exp_nomem_agg_cosine.out &
 

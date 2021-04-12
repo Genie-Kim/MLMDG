@@ -6,7 +6,7 @@ from dataset import natural_datasets
 from dataset.dg_dataset import *
 from network.components.customized_evaluate import NaturalImageMeasure, MeterDicts
 from network.components.schedulers import PolyLR
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmRestarts
 import segmodel
 from utils.nn_utils import *
 from utils.nn_utils import get_updated_network, get_logger, get_img_target
@@ -26,8 +26,8 @@ class MetaFrameWork(object):
     def __init__(self, network_init, name='normal_all', train_num=1, source='GSIM',
                  target='C', network='MemDeeplabv3plus', resume=True, dataset=DGMetaDataSets,
                  inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=False, debug=False,
-                 lamb_cpt=0.01, lamb_sep=0.01, no_outer_memloss=False, no_inner_memloss=False, mem_after_update=True,
-                 lrplateau=True):
+                 lamb_cpt=0.1, lamb_sep=0.2, no_outer_memloss=False, no_inner_memloss=False, mem_after_update=True,
+                 sche='lrplate'):
 
         super(MetaFrameWork, self).__init__()
         self.no_source_test = no_source_test
@@ -59,7 +59,6 @@ class MetaFrameWork(object):
         self.best_source_acc_target = 0
         self.best_source_epoch = 0
 
-        self.total_epoch = 120
         self.save_interval = 1
         self.save_path = Path(self.exp_name)
         self.debug = debug
@@ -69,7 +68,7 @@ class MetaFrameWork(object):
         self.no_outer_memloss = no_outer_memloss # if true, only segmentation loss on outer step.
         self.no_inner_memloss = no_inner_memloss # if true, only segmentation loss on inner step.
         self.mem_after_update = mem_after_update
-        self.lrplateau = lrplateau
+        self.sche = sche
 
         self.init(network_init)
 
@@ -108,12 +107,19 @@ class MetaFrameWork(object):
 
         self.opt_old = SGD(self.backbone.parameters(), lr=self.outer_update_lr, momentum=0.9, weight_decay=5e-4)
 
-        if self.lrplateau:
-            patience = 10 / self.save_interval
-            self.scheduler_old = ReduceLROnPlateau(self.opt_old, factor=0.1, patience=patience,verbose = True)
-        else:
-            self.scheduler_old = PolyLR(self.opt_old, self.total_epoch, len(self.train_loader), 0, True, power=0.9)
 
+        if self.sche == 'lrplate':
+            self.total_epoch = 200
+            patience = 8 / self.save_interval
+            self.scheduler_old = ReduceLROnPlateau(self.opt_old, factor=0.5, patience=patience,verbose = True)
+        elif self.sche == 'poly':
+            self.total_epoch = 200
+            self.scheduler_old = PolyLR(self.opt_old, self.total_epoch, len(self.train_loader), 0, True, power=0.9)
+        elif self.sche == 'cosine':
+            T_0 = 80
+            self.total_epoch = T_0 * 2
+            minlr = self.outer_update_lr * 0.01
+            self.scheduler_old = CosineAnnealingWarmRestarts(self.opt_old, T_0  = T_0, T_mult=1, eta_min = minlr)
 
         self.logger = get_logger('train', self.exp_name)
         self.log('exp_name : {}, train_num = {}, source domains = {}, target_domain = {}, lr : inner = {}, outer = {},'
@@ -122,6 +128,7 @@ class MetaFrameWork(object):
                         self.network))
         self.log(self.exp_name + '\n')
         self.train_timer, self.test_timer = Timer(), Timer()
+
 
     def train(self, epoch, it, inputs):
         # imgs : batch x domains x C x H x W
@@ -154,7 +161,8 @@ class MetaFrameWork(object):
         self.opt_old.zero_grad()
         ds_loss.backward()
         self.opt_old.step()
-        if not self.lrplateau:
+
+        if self.sche == 'poly':
             self.scheduler_old.step(epoch, it)
 
         # memory update.
@@ -169,7 +177,14 @@ class MetaFrameWork(object):
 
         losses = {
             'dg': 0,
-            'ds': ds_loss.item()
+            'ds': ds_loss.item(),
+
+            'in_seg_loss': in_seg_loss.item(),
+            'in_cpt_loss': in_cpt_loss.item(),
+            'in_sep_loss': in_sep_loss.item(),
+
+            'lr': self.opt_old.param_groups[-1]['lr'],
+
         }
         acc = {
             'iou': self.nim.get_res()[0]
@@ -250,7 +265,7 @@ class MetaFrameWork(object):
         # Update old network
         dg_loss.backward()
         self.opt_old.step()
-        if not self.lrplateau:
+        if self.sche=='poly':
             self.scheduler_old.step(epoch, it)
 
         # memory update.
@@ -275,6 +290,8 @@ class MetaFrameWork(object):
             'out_seg_loss' : out_seg_loss.item(),
             'out_cpt_loss' : out_cpt_loss.item(),
             'out_sep_loss' : out_sep_loss.item(),
+
+            'lr' : self.opt_old.param_groups[-1]['lr'],
         }
 
         acc = {
@@ -317,10 +334,10 @@ class MetaFrameWork(object):
             # self.save('ckpt')
             if epoch % self.save_interval == 0:
                 with self.test_timer:
-                    city_acc, valloss = self.val(self.target_loader)
-                    if self.lrplateau:
-                        self.scheduler_old.step(valloss)
+                    city_acc, _ = self.val(self.target_loader)
                     self.save_best(city_acc, epoch)
+            if self.sche == 'cosine':
+                self.scheduler_old.step(epoch)
 
             total_duration = self.train_timer.duration + self.test_timer.duration
             self.print('Time Left : ' + self.train_timer.get_formatted_duration(total_duration * (self.total_epoch - epoch)) + '\n')
@@ -333,7 +350,9 @@ class MetaFrameWork(object):
     def save_best(self, city_acc, epoch):
         self.writer.add_scalar('acc/citys', city_acc, epoch)
         if not self.no_source_test:
-            origin_acc,_ = self.val(self.source_val_loader)
+            origin_acc,valloss = self.val(self.source_val_loader)
+            if self.sche=='lrplate':
+                self.scheduler_old.step(valloss)
             self.writer.add_scalar('acc/origin', origin_acc, epoch)
         else:
             origin_acc = 0

@@ -23,7 +23,7 @@ parser.add_argument('--no_outer_memloss', action='store_true', help='memory loss
 parser.add_argument('--no_inner_memloss', action='store_true', help='memory loss on outer update step')
 parser.add_argument('--mem_after_update', action='store_true', help='memory loss on outer update step')
 parser.add_argument('--lamb_cpt', type=float, default=1e-1, help='inner learning rate of meta update')
-parser.add_argument('--lamb_sep', type=float, default=1e-1, help='outer learning rate of network update')
+parser.add_argument('--lamb_sep', type=float, default=1e-2, help='outer learning rate of network update')
 parser.add_argument('--train-size', type=int, default=2, help='the batch size of training')
 parser.add_argument('--test-size', type=int, default=2, help='the batch size of evaluation')
 parser.add_argument('--train-num', type=int, default=1,
@@ -32,7 +32,7 @@ parser.add_argument('--train-num', type=int, default=1,
 parser.add_argument('--network', default='MemDeeplabv3plus', help='network for DG')
 parser.add_argument('--memory', action='store_true', help='use memory')
 parser.add_argument('--supervised_mem', action='store_true', help='use supervised memory')
-parser.add_argument('--lrplateau', action='store_true', help='use supervised memory')
+parser.add_argument('--sche', default='lrplate',choices=['lrplate', 'cosine', 'poly'], help='scheduler')
 
 
 
@@ -113,7 +113,7 @@ if __name__ == '__main__':
     # job = FunctionJob([train], gpus=[[1]])
     # job.run(minimum_memory=10000)
     # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    # train()
-    draw_tsne()
+    train()
+    # draw_tsne()
     # predict()
     # eval()
