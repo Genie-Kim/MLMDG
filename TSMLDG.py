@@ -417,7 +417,7 @@ class MetaFrameWork(object):
 
                         count += torch.t(targets.sum(1).unsqueeze(dim=1)[:,:,:self.nim.nclass].sum(0))
                         basket += torch.t(torch.matmul(query, targets)[:,:,:self.nim.nclass].sum(0))
-                        break
+                        # break
 
             count[count == 0] = 1 # for nan
             init_prototypes = torch.div(basket, count)

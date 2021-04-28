@@ -119,7 +119,7 @@ if __name__ == '__main__':
     # from utils.task import FunctionJob
     # job = FunctionJob([train], gpus=[[1]])
     # job.run(minimum_memory=10000)
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     train()
     # draw_tsne()
     # predict()
