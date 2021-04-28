@@ -21,7 +21,6 @@ parser.add_argument('--inner-lr', type=float, default=1e-3, help='inner learning
 parser.add_argument('--outer-lr', type=float, default=5e-3, help='outer learning rate of network update')
 parser.add_argument('--no_outer_memloss', action='store_true', help='memory loss on outer update step')
 parser.add_argument('--no_inner_memloss', action='store_true', help='memory loss on outer update step')
-parser.add_argument('--mem_after_update', action='store_true', help='memory loss on outer update step')
 parser.add_argument('--lamb_cpt', type=float, default=1e-1, help='inner learning rate of meta update')
 parser.add_argument('--lamb_sep', type=float, default=1e-2, help='outer learning rate of network update')
 parser.add_argument('--train-size', type=int, default=2, help='the batch size of training')
@@ -29,10 +28,13 @@ parser.add_argument('--test-size', type=int, default=2, help='the batch size of 
 parser.add_argument('--train-num', type=int, default=1,
                     help='every ? iteration do one meta train, 1 is meta train, 10000000 is normal supervised learning.')
 
-parser.add_argument('--network', default='MemDeeplabv3plus', help='network for DG')
+parser.add_argument('--network', default='Deeplabv3plus_Memsup', help='network for DG')
 parser.add_argument('--memory', action='store_true', help='use memory')
 parser.add_argument('--supervised_mem', action='store_true', help='use supervised memory')
+parser.add_argument('--add1by1', action='store_true', help='use supervised memory')
 parser.add_argument('--sche', default='lrplate',choices=['lrplate', 'cosine', 'poly'], help='scheduler')
+
+# parser.add_argument('--configs', default='MemDeeplabv3plus', help='configfile')
 
 
 
@@ -41,6 +43,11 @@ def init():
     if args['debug'] == True:
         os.environ['CUDA_VISIBLE_DEVICES'] = '0'
         args['name'] = 'tmp'
+    # if 'configs' in args:
+    #     config_file = args['configs']
+    #     import json
+    #     args.update(json.loads(config_file))
+
 
     for name in args['source']:
         assert name in 'GSIMCcuv'
@@ -48,17 +55,17 @@ def init():
         assert name in 'GSIMCcuv'
 
 
-    if args['network'] == 'MemDeeplabv3plus':
+    if args['network'] in ['Deeplabv3plus_Memsup','Deeplabv3plus_Memunsup']:
         if args.pop('memory'):
             supervised_mem = args.pop('supervised_mem')
             memory_init = {'memory_size': 19 if supervised_mem else 19, 'feature_dim': 256, 'key_dim': 256, 'temp_update': 0.1,
-                           'temp_gather': 0.1,'supervised_mem':supervised_mem,'momentum' : 0.2}
+                           'temp_gather': 0.1,'supervised_mem':supervised_mem,'momentum' : 0.2,'temperature' : 0.1}
         else:
             args.pop('supervised_mem')
             memory_init = None
 
         network_init = {'in_ch': 3, 'nclass': 19, 'backbone': 'resnet50', 'output_stride': 8, 'pretrained': True,
-                        'freeze_bn': False,
+                        'freeze_bn': False, 'add1by1': args.pop('add1by1'),
                         'freeze_backbone': False, 'skipconnect': True, 'memory_init': memory_init}
 
     args.update({'network_init': network_init})
@@ -112,7 +119,7 @@ if __name__ == '__main__':
     # from utils.task import FunctionJob
     # job = FunctionJob([train], gpus=[[1]])
     # job.run(minimum_memory=10000)
-    # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     train()
     # draw_tsne()
     # predict()

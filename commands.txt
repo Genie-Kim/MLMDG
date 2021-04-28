@@ -40,3 +40,12 @@ CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3p
 exp_nomem_agg_cosine
 CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network MemDeeplabv3plus --name exp_nomem_agg_cosine --train-num 10000000 --sche cosine &> exp_nomem_agg_cosine.out &
 
+exp_1e2_supmem_mldg_after_lrplate
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network MemDeeplabv3plus --lamb_cpt 0.1 --memory --supervised_mem --lamb_sep 0.2 --name exp_1e2_supmem_mldg_after_lrplate --mem_after_update --sche lrplate &> exp_1e2_supmem_mldg_after_lrplate.out &
+
+
+exp_mldg_supmem_sep1_tempe-1_nooutseploss_no1x1write
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network Deeplabv3plus_Memsup --memory --supervised_mem --lamb_sep 1 --name exp_mldg_supmem_sep1_tempe-1_nooutseploss_no1x1write --sche lrplate --no_outer_memloss &> exp_mldg_supmem_sep1_tempe-1_nooutseploss_no1x1write.out &
+
+exp_mldg_supmem_sep1_tempe-1_nooutseploss_1x1write
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network Deeplabv3plus_Memsup --memory --supervised_mem --lamb_sep 1 --name exp_mldg_supmem_sep1_tempe-1_nooutseploss_1x1write --sche lrplate --no_outer_memloss --add1by1 &> exp_mldg_supmem_sep1_tempe-1_nooutseloss_1x1write.out &

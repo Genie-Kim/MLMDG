@@ -24,10 +24,9 @@ np.random.seed(seed)
 
 class MetaFrameWork(object):
     def __init__(self, network_init, name='normal_all', train_num=1, source='GSIM',
-                 target='C', network='MemDeeplabv3plus', resume=True, dataset=DGMetaDataSets,
+                 target='C', network='Deeplabv3plus_Memsup', resume=True, dataset=DGMetaDataSets,
                  inner_lr=1e-3, outer_lr=5e-3, train_size=8, test_size=16, no_source_test=False, debug=False,
-                 lamb_cpt=0.1, lamb_sep=0.2, no_outer_memloss=False, no_inner_memloss=False, mem_after_update=True,
-                 sche='lrplate'):
+                 lamb_cpt=0.1, lamb_sep=0.2, no_outer_memloss=False, no_inner_memloss=False, sche='lrplate', meta_version =2):
 
         super(MetaFrameWork, self).__init__()
         self.no_source_test = no_source_test
@@ -40,6 +39,7 @@ class MetaFrameWork(object):
         self.outer_update_lr = outer_lr
 
         if network in vars(segmodel):
+            self.backbone_name = network
             self.network = vars(segmodel)[network]
         else:
             raise NotImplementedError
@@ -67,13 +67,14 @@ class MetaFrameWork(object):
         self.lamb_sep = lamb_sep
         self.no_outer_memloss = no_outer_memloss # if true, only segmentation loss on outer step.
         self.no_inner_memloss = no_inner_memloss # if true, only segmentation loss on inner step.
-        self.mem_after_update = mem_after_update
         self.sche = sche
+        self.meta_version = meta_version
 
         self.init(network_init)
 
         self.using_memory = True if network_init['memory_init'] != None else False
-
+        if self.using_memory:
+            self.memory_initalize()
 
 
     def init(self,network_init):
@@ -167,13 +168,10 @@ class MetaFrameWork(object):
 
         # memory update.
         if self.using_memory:
-            if self.mem_after_update: # memory updated by Et+1 encoder
-                self.backbone.eval()
-                with torch.no_grad():
-                    self.backbone.module.update_memory(self.backbone(meta_train_imgs)[0][-1])
-                self.backbone.train()
-            else: # memory updated by mem_prime
-                self.backbone.module.update_memory(tr_net_output[-1])
+            self.backbone.eval()
+            with torch.no_grad():
+                self.backbone.module.update_memory(self.backbone(meta_train_imgs)[0][-1])
+            self.backbone.train()
 
         losses = {
             'dg': 0,
@@ -191,7 +189,7 @@ class MetaFrameWork(object):
         }
         return losses, acc, self.opt_old.param_groups[-1]['lr']
 
-    def meta_train(self, epoch, it, inputs):
+    def meta_train_v1(self, epoch, it, inputs):
         # imgs : batch x domains x C x H x W
         # targets : batch x domains x 1 x H x W
 
@@ -233,11 +231,11 @@ class MetaFrameWork(object):
         self.opt_old.zero_grad()
         ds_loss.backward(retain_graph=True)
         self.updated_net = get_updated_network(self.backbone, self.updated_net, self.inner_update_lr).train().cuda()
-        # synchronize memory
-        self.updated_net.module.m_items = self.backbone.module.m_items
 
         # update inner updated network's memory using Et features
         with torch.no_grad():
+            # synchronize memory
+            self.updated_net.module.m_items = self.backbone.module.m_items
             mem_prime = self.updated_net.module.update_memory(tr_net_output[-1],meta_train_targets)
 
 
@@ -270,14 +268,11 @@ class MetaFrameWork(object):
 
         # memory update.
         if self.using_memory:
-            if self.mem_after_update: # memory updated by Et+1 encoder
-                self.backbone.eval()
-                with torch.no_grad():
-                    tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
-                    self.backbone.module.update_memory(tr_net_output[-1])
-                self.backbone.train()
-            else: # memory updated by mem_prime
-                self.backbone.module.m_items = mem_prime
+            self.backbone.eval()
+            with torch.no_grad():
+                tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
+                self.backbone.module.update_memory(tr_net_output[-1],meta_train_targets)
+            self.backbone.train()
 
         losses = {
             'dg': dg_loss.item(),
@@ -300,6 +295,134 @@ class MetaFrameWork(object):
 
         return losses, acc, self.opt_old.param_groups[-1]['lr']
 
+
+    def meta_train_v2(self, epoch, it, inputs):
+        # supervised mem + new update methods
+        # imgs : batch x domains x C x H x W
+        # targets : batch x domains x 1 x H x W
+        imgs, targets = inputs
+        B, D, C, H, W = imgs.size()
+        split_idx = np.random.permutation(D)
+        i = np.random.randint(1, D)
+        train_idx = split_idx[:i]
+        test_idx = split_idx[i:]
+        # train_idx = split_idx[:D // 2]
+        # test_idx = split_idx[D // 2:]
+
+        # self.print(split_idx, B, D, C, H, W)'
+        meta_train_imgs = imgs[:, train_idx].reshape(-1, C, H, W)
+        meta_train_targets = targets[:, train_idx].reshape(-1, 1, H, W)
+        meta_test_imgs = imgs[:, test_idx].reshape(-1, C, H, W)
+        meta_test_targets = targets[:, test_idx].reshape(-1, 1, H, W)
+
+        # backup the t_step memory items.
+        backup_mem_t = self.backbone.module.m_items.clone().detach()
+
+        # Meta-Train
+        tr_net_output, tr_mem_output = self.backbone(meta_train_imgs,meta_train_targets,onlywriteloss=False) # update memory to mem_t'
+        tr_logits = tr_net_output[0]
+        in_mem_loss = tr_mem_output[-1]
+        tr_logits = make_same_size(tr_logits, meta_train_targets)
+        in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
+
+
+        if self.no_inner_memloss:
+            ds_loss = in_seg_loss
+        else:
+            ds_loss = in_seg_loss + self.lamb_sep * in_mem_loss
+
+        # Update new network
+        self.opt_old.zero_grad()
+        ds_loss.backward(retain_graph=True)
+        self.updated_net = get_updated_network(self.backbone, self.updated_net, self.inner_update_lr).train().cuda()
+        # update inner updated network's memory using Et features
+        with torch.no_grad():
+            # synchronize memory
+            self.updated_net.module.m_items = self.backbone.module.m_items # mem_t'
+
+
+        # Meta-Test
+        te_net_output, te_mem_output = self.updated_net(meta_test_imgs,meta_test_targets,onlywriteloss=True) # do not update memory
+        te_logits = te_net_output[0]
+        out_mem_loss = tr_mem_output[-1]
+        te_logits = make_same_size(te_logits, meta_test_targets)
+        out_seg_loss = self.ce(te_logits, meta_test_targets[:, 0])
+
+        if self.no_outer_memloss:
+            dg_loss = out_seg_loss
+        else:
+            dg_loss = out_seg_loss + self.lamb_sep * out_mem_loss
+
+        with torch.no_grad():
+            self.nim(te_logits, meta_test_targets)
+
+        # Update old network
+        dg_loss.backward()
+        self.opt_old.step()
+        if self.sche=='poly':
+            self.scheduler_old.step(epoch, it)
+
+        # memory update.
+        if self.using_memory:
+            self.backbone.eval()
+            with torch.no_grad():
+                # recover the t step memory.
+                self.backbone.module.m_items = backup_mem_t
+                # update memory to mem_t+1
+                _, _ = self.backbone(meta_train_imgs,meta_train_targets,onlywriteloss = False)
+            self.backbone.train()
+
+        losses = {
+            'dg': dg_loss.item(),
+            'ds': ds_loss.item(),
+
+            'in_seg_loss' : in_seg_loss.item(),
+            'in_mem_loss' : in_mem_loss.item(),
+
+            'out_seg_loss' : out_seg_loss.item(),
+            'out_mem_loss' : out_mem_loss.item(),
+
+            'lr' : self.opt_old.param_groups[-1]['lr'],
+        }
+
+        acc = {
+            'iou': self.nim.get_res()[0],
+        }
+
+        return losses, acc, self.opt_old.param_groups[-1]['lr']
+
+
+    def memory_initalize(self):
+        with torch.no_grad():
+            basket = torch.zeros(size = self.backbone.module.m_items.size()).cuda()
+            count = torch.zeros(size = (self.nim.nclass,1)).cuda()
+            self.backbone.eval()
+            for epoch in range(2):
+                for it, (path, imgs, targets) in enumerate(tqdm(self.train_loader,desc="memory initializing...epoch " + str(epoch))):
+                    imgs, targets = to_cuda([imgs, targets])
+                    B, D, C, H, W = imgs.size()
+                    imgs = imgs.view(-1, C, H, W)
+                    targets = targets.view(-1, 1, H, W)
+                    if self.backbone_name in ['Deeplabv3plus_Memsup','Deeplabv3plus_Memunsup']:
+                        x,_ = self.backbone.module.backbone(imgs)
+                        query = self.backbone.module.ASSP(x)
+                        batch_size, dims, h, w = query.size()
+                        targets = F.interpolate(targets.type(torch.float32), query.size()[2:], mode='bilinear',
+                                                 align_corners=True)
+                        targets = targets.type(torch.int64)
+                        query = query.view(batch_size, dims, -1)
+                        targets[targets == -1] = self.nim.nclass  # when supervised memory, memory size = class number
+                        targets = F.one_hot(targets, num_classes=self.nim.nclass + 1).squeeze()
+                        targets = targets.view(batch_size, -1, self.nim.nclass + 1).type(torch.float32)
+
+                        count += torch.t(targets.sum(1).unsqueeze(dim=1)[:,:,:self.nim.nclass].sum(0))
+                        basket += torch.t(torch.matmul(query, targets)[:,:,:self.nim.nclass].sum(0))
+                        break
+
+            count[count == 0] = 1 # for nan
+            init_prototypes = torch.div(basket, count)
+            self.backbone.module.m_items = F.normalize(init_prototypes, dim=1)
+
     def do_train(self):
         if self.resume:
             self.load('best_city')
@@ -317,7 +440,10 @@ class MetaFrameWork(object):
                 for it, (paths, imgs, target) in enumerate(self.train_loader):
                     meta = (it + 1) % self.train_num == 0
                     if meta:
-                        losses, acc, lr = self.meta_train(epoch - 1, it, to_cuda([imgs, target]))
+                        if self.meta_version == 1:
+                            losses, acc, lr = self.meta_train_v1(epoch - 1, it, to_cuda([imgs, target]))
+                        elif self.meta_version == 2:
+                            losses, acc, lr = self.meta_train_v2(epoch - 1, it, to_cuda([imgs, target]))
                     else:
                         losses, acc, lr = self.train(epoch - 1, it, to_cuda([imgs, target]))
 
