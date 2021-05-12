@@ -1,0 +1,10 @@
+scipy
+scikit-learn
+scikit-image
+opencv-python
+tqdm
+Pillow
+yacs
+tensorflow
+nvidia-ml-py3
+tensorboardX
