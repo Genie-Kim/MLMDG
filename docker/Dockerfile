@@ -1,4 +1,4 @@
-FROM nvidia/cuda:9.2-cudnn7-devel-ubuntu18.04
+FROM nvidia/cuda:10.0-cudnn7-runtime-ubuntu18.04
 
 ENV DEBIAN_FRONTEND noninteractive
 RUN apt-get update && apt-get install -y \
@@ -19,11 +19,11 @@ RUN wget https://bootstrap.pypa.io/get-pip.py && \
 	python3 get-pip.py --user && \
 	rm get-pip.py
 
+RUN wget --quiet https://repo.anaconda.com/archive/Anaconda3-2020.11-Linux-x86_64.sh
+RUN pip install --user torch==1.2.0 torchvision==0.4.0
+RUN pip install --user scipy scikit-learn scikit-image opencv-python tqdm Pillow yacs tensorflow nvidia-ml-py3 tensorboardX
 
-RUN pip install --user torch==1.2.0+cu92 torchvision==0.4.0+cu92 -f https://download.pytorch.org/whl/torch_stable.html
-RUN git clone https://github.com/Genie-Kim/TSMLDG_bdd.git
-WORKDIR /home/appuser/TSMLDG_bdd
-RUN pip install --user -r requirement.txt
-RUN git config --global alias.lg "log --graph --abbrev-commit --decorate --format=format:'%C(cyan)%h%C(reset) - %C(green)(%ar)%C(reset) %C(white)%s%C(reset) %C(dim white)- %an%C(reset)%C(yellow)%d%C(reset)' --all"
+RUN git config --global alias.lg "log --all --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr)%C(bold blue)<%an>%Creset' --abbrev-commit"
+RUN git config --global alias.s "status -s"
 RUN sudo apt-get update
-RUN sudo apt-get install -y vim
+RUN sudo apt-get install -y vim htop
