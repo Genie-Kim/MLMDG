@@ -31,6 +31,7 @@ RUN conda activate mlmdg
 
 RUN pip install --user torch==1.2.0 torchvision==0.4.0
 RUN pip install --user scipy scikit-learn scikit-image opencv-python tqdm Pillow yacs tensorflow nvidia-ml-py3 tensorboardX
+RUN conda install -y tsnecuda cuda100 -c cannylab
 
 RUN git config --global alias.lg "log --all --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr)%C(bold blue)<%an>%Creset' --abbrev-commit"
 RUN git config --global alias.s "status -s"
