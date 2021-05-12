@@ -19,14 +19,16 @@ RUN wget https://bootstrap.pypa.io/get-pip.py && \
 	python3 get-pip.py --user && \
 	rm get-pip.py
 
+ENV PATH ~/anaconda3/bin:$PATH
 RUN wget --quiet https://repo.anaconda.com/archive/Anaconda3-2020.11-Linux-x86_64.sh -O ~/anaconda.sh && \
-    /bin/bash ~/anaconda.sh -b -p /opt/conda && \
+    /bin/bash ~/anaconda.sh -b -p ~/anaconda3 && \
     rm ~/anaconda.sh && \
-    ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d/conda.sh && \
-    echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc && \
+    echo ". ~/anaconda3/etc/profile.d/conda.sh" >> ~/.bashrc && \
     echo "conda activate base" >> ~/.bashrc
-
 RUN source ~/.bashrc
+RUN conda create -y -n mlmdg python=3.6
+RUN conda activate mlmdg
+
 RUN pip install --user torch==1.2.0 torchvision==0.4.0
 RUN pip install --user scipy scikit-learn scikit-image opencv-python tqdm Pillow yacs tensorflow nvidia-ml-py3 tensorboardX
 
