@@ -33,7 +33,8 @@ parser.add_argument('--memory', action='store_true', help='use memory')
 parser.add_argument('--supervised_mem', action='store_true', help='use supervised memory')
 parser.add_argument('--add1by1', action='store_true', help='use supervised memory')
 parser.add_argument('--sche', default='lrplate',choices=['lrplate', 'cosine', 'poly'], help='scheduler')
-
+parser.add_argument('--momentum', type=float, default=1e-2, help='outer learning rate of network update')
+parser.add_argument('--temperature', type=float, default=1, help='outer learning rate of network update')
 # parser.add_argument('--configs', default='MemDeeplabv3plus', help='configfile')
 
 
@@ -55,11 +56,11 @@ def init():
         assert name in 'GSIMCcuv'
 
 
-    if args['network'] in ['Deeplabv3plus_Memsup','Deeplabv3plus_Memunsup']:
+    if args['network'] in ['Deeplabv3plus_Memsup']:
         if args.pop('memory'):
             supervised_mem = args.pop('supervised_mem')
             memory_init = {'memory_size': 19 if supervised_mem else 19, 'feature_dim': 256, 'key_dim': 256, 'temp_update': 0.1,
-                           'temp_gather': 0.1,'supervised_mem':supervised_mem,'momentum' : 0.2,'temperature' : 0.1}
+                           'temp_gather': 0.1,'supervised_mem':supervised_mem,'momentum' : args.pop('momentum'),'temperature' : args.pop('temperature')}
         else:
             args.pop('supervised_mem')
             memory_init = None
@@ -67,6 +68,22 @@ def init():
         network_init = {'in_ch': 3, 'nclass': 19, 'backbone': 'resnet50', 'output_stride': 8, 'pretrained': True,
                         'freeze_bn': False, 'add1by1': args.pop('add1by1'),
                         'freeze_backbone': False, 'skipconnect': True, 'memory_init': memory_init}
+
+    elif args['network'] in ['Deeplabv3plus_Memunsup']:
+        if args.pop('memory'):
+            supervised_mem = args.pop('supervised_mem')
+            memory_init = {'memory_size': 19 if supervised_mem else 19, 'feature_dim': 256, 'key_dim': 256, 'temp_update': 0.1,
+                           'temp_gather': 0.1,'supervised_mem':supervised_mem,'momentum' : 0.2}
+        else:
+            args.pop('supervised_mem')
+            memory_init = None
+
+        network_init = {'in_ch': 3, 'nclass': 19, 'backbone': 'resnet50', 'output_stride': 8, 'pretrained': True,
+                        'freeze_bn': False,
+                        'freeze_backbone': False, 'skipconnect': True, 'memory_init': memory_init}
+        args.pop('add1by1')
+
+
 
     args.update({'network_init': network_init})
 
@@ -83,13 +100,13 @@ def train():
 def draw_tsne():
     args = init()
     framework = MetaFrameWork(**args)
-    framework.draw_tsne_domcls(perplexities=[30], learning_rate=10, imagenum=1,pthname = 'best_city')
+    framework.draw_tsne_domcls(perplexities=[30], learning_rate=10, imagenum=8,pthname = 'best_city')
 
 
 def predict():
     args = init()
     framework = MetaFrameWork(**args)
-    framework.predict_target(load_path='best_city', output_path='predictions',savenum = 3,inputimgname=None)
+    framework.predict_target(load_path='best_city', output_path='predictions',savenum = 3,inputimgname='munster_000065_000019_leftImg8bit.png')
 
 def eval():
     args = init()

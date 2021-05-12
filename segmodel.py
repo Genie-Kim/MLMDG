@@ -56,7 +56,7 @@ class Deeplabv3plus_Memunsup(DeepLab):
         H, W = x.size(2), x.size(3)
         x, low_level_features = self.backbone(x)
         fea = self.ASSP(x)
-        features = fea.clone().detach()
+        features = F.normalize(fea, dim=1).clone().detach()
         mem_output = []
         # memory
         if type(self.m_items) != type(None):
@@ -120,8 +120,7 @@ class Deeplabv3plus_Memsup(DeepLab):
         H, W = x.size(2), x.size(3)
         x, low_level_features = self.backbone(x)
         fea = self.ASSP(x)
-        features = fea.clone().detach()
-        read_output = []
+        features = F.normalize(fea, dim=1).clone().detach()
         write_output = []
         # memory
         if type(self.m_items) != type(None):

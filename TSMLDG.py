@@ -1,3 +1,4 @@
+import numpy as np
 from tensorboardX import SummaryWriter
 from torch import nn
 from torch.optim import SGD
@@ -73,8 +74,6 @@ class MetaFrameWork(object):
         self.init(network_init)
 
         self.using_memory = True if network_init['memory_init'] != None else False
-        if self.using_memory:
-            self.memory_initalize()
 
 
     def init(self,network_init):
@@ -427,6 +426,9 @@ class MetaFrameWork(object):
         if self.resume:
             self.load('best_city')
             # self.load()
+        else:
+            if self.using_memory:
+                self.memory_initalize()
 
         self.writer = SummaryWriter(str(self.save_path / 'tensorboard'), filename_suffix=time.strftime('_%Y-%m-%d_%H-%M-%S'))
         self.log('Start epoch : {}\n'.format(self.epoch))
@@ -708,18 +710,19 @@ class MetaFrameWork(object):
         assert perplexities is not list
         import skimage.io as skio
         overlay_rate = 0.7
+        num_vec_imgcls = 100
 
         self.load(pthname)
         output_path = Path(self.save_path / output_path)
         output_path.mkdir(exist_ok=True)
-        domains = (self.source + self.target)
-        sequence_of_colors = ["red", "green", "blue", "magenta", "cyan","yellow","black"]
+        self.domains = (self.source + self.target)
 
-        datasets = [(dom,get_target_loader(dom, 1, num_workers=0,mode='test',shuffle=False)) for dom in domains]
+        datasets = [(dom,get_target_loader(dom, 1, num_workers=0,mode='test',shuffle=False)) for dom in self.domains]
 
-        # selected_cls = ['road','building','vegetation','sky','person','car']
-        selected_cls = ['person','vegetation','car']
+        selected_cls = ['road','building','vegetation','sky','person','car']
+        # selected_cls = ['person','vegetation','car']
         # selected_cls = ['road','building','sky']
+
         cls2id = self.target_loader.dataset.idx_of_objects
 
         self.backbone.eval()
@@ -729,49 +732,73 @@ class MetaFrameWork(object):
 
 
         with torch.no_grad():
-            for domi, (dom, dataset) in enumerate(datasets):
+            for domi, (dom, dataset) in enumerate(tqdm(datasets)):
                 count = 0
                 for p, img, target in dataset:
-                    count += 1
                     img, target = to_cuda(get_img_target(img, target))
+                    target_ori = target.clone()
                     outputs = self.backbone(img)[0]
-                    logits = outputs[0]
-                    logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
-                    trainId_preds = get_prediction(logits).cpu().numpy()
-                    for pred, name, onelabel in zip(trainId_preds, p, target):
-                        filename = name.split('/')[-1]
-                        pred_file_name = os.path.splitext(filename)[0] + '_pred.jpg'
-                        label_file_name = os.path.splitext(filename)[0] + '_label.jpg'
-                        pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
-                        ori_img = skio.imread(name).astype(np.uint8)
-                        onelabel = class_map_2_color_map(onelabel.cpu().numpy().squeeze()).transpose(1, 2, 0).astype(
-                            np.uint8)
-                        skio.imsave(str(output_path / pred_file_name),
-                                    (1 - overlay_rate) * ori_img + overlay_rate * pred)
-                        skio.imsave(str(output_path / label_file_name),
-                                    (1 - overlay_rate) * ori_img + overlay_rate * onelabel)
 
                     features = outputs[-1]
                     target[target == -1] = self.nim.nclass
                     target = F.interpolate(target.to(torch.float32), features.size()[2:], mode='bilinear', align_corners=True)
                     target[(target - target.to(torch.int32).to(torch.float32)) != 0] = self.nim.nclass
                     mask = F.one_hot(target.to(torch.int64), num_classes=self.nim.nclass + 1).squeeze()
-                    for clsi,cls in enumerate(selected_cls):
-                        clsmask = mask[:,:,cls2id[cls]]
-                        cls_vec = torch.t(features[:, :, clsmask == 1].squeeze())
-                        cls_label = torch.zeros(cls_vec.size()[0],1).cuda() + clsi
-                        dom_label = torch.zeros(cls_vec.size()[0],1).cuda() + domi
 
-                        feat_vecs = torch.cat((feat_vecs, cls_vec), dim=0)
-                        feat_vec_labels = torch.cat((feat_vec_labels, cls_label), dim=0)
-                        feat_vec_domlabels = torch.cat((feat_vec_domlabels, dom_label), dim=0)
+                    min_num_cls = True
+                    for clsi, cls in enumerate(selected_cls): # 현재의 이미지에 class에 해당하는 vector의 개수가 최소 조건을 충족하는지 검사.
+                        clsmask = mask[:,:,cls2id[cls]]
+                        if (clsmask==1).sum() < num_vec_imgcls:
+                            min_num_cls = False
+                            break
+
+                    if min_num_cls:
+                        count += 1
+                        logits = outputs[0]
+                        logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
+                        trainId_preds = get_prediction(logits).cpu().numpy()
+                        # for pred, name, onelabel in zip(trainId_preds, p, target_ori): # feature 뽑은 이미지 prediction저장.
+                        #     filename = name.split('/')[-1]
+                        #     pred_file_name = os.path.splitext(filename)[0] + '_pred.jpg'
+                        #     label_file_name = os.path.splitext(filename)[0] + '_label.jpg'
+                        #     pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
+                        #     ori_img = skio.imread(name).astype(np.uint8)
+                        #     onelabel = class_map_2_color_map(onelabel.cpu().numpy().squeeze()).transpose(1, 2, 0).astype(
+                        #         np.uint8)
+                        #     skio.imsave(str(output_path / pred_file_name),
+                        #                 (1 - overlay_rate) * ori_img + overlay_rate * pred)
+                        #     skio.imsave(str(output_path / label_file_name),
+                        #                 (1 - overlay_rate) * ori_img + overlay_rate * onelabel)
+
+                        for clsi,cls in enumerate(selected_cls):
+                            clsmask = mask[:,:,cls2id[cls]]
+                            cls_vec = torch.t(features[:, :, clsmask == 1].squeeze())
+
+                            cls_vec = cls_vec[torch.randint(cls_vec.size()[0], (num_vec_imgcls,))] # sampled vector.
+
+                            cls_label = torch.zeros(cls_vec.size()[0],1).cuda() + cls2id[cls]
+                            dom_label = torch.zeros(cls_vec.size()[0],1).cuda() + domi
+
+                            feat_vecs = torch.cat((feat_vecs, cls_vec), dim=0)
+                            feat_vec_labels = torch.cat((feat_vec_labels, cls_label), dim=0)
+                            feat_vec_domlabels = torch.cat((feat_vec_domlabels, dom_label), dim=0)
+
                     if count >= imagenum:
                         break
 
         if self.using_memory:
             m_items = self.backbone.module.m_items.clone().detach()
-            mem_address = feat_vecs.size()[0]
-            feat_vecs = torch.cat((feat_vecs, m_items), dim=0)
+            mem_vecs = torch.tensor([]).cuda()
+            mem_vec_labels = torch.tensor([]).cuda()
+
+            # supervised.
+            for clsi, cls in enumerate(selected_cls):
+                mem_vecs = torch.cat((mem_vecs, m_items[cls2id[cls], :].unsqueeze(dim=0)), dim=0)
+                mem_vec_labels = torch.cat((mem_vec_labels, torch.zeros(1,1).cuda() + cls2id[cls]), dim=0)
+
+            # unsupervised
+            # feat_vecs = torch.cat((feat_vecs, m_items), dim=0)
+
 
         del self.backbone
         torch.cuda.empty_cache()
@@ -779,48 +806,87 @@ class MetaFrameWork(object):
         feat_vecs = feat_vecs.cpu().numpy()
         feat_vec_labels = feat_vec_labels.to(torch.int64).squeeze().cpu().numpy()
         feat_vec_domlabels = feat_vec_domlabels.to(torch.int64).squeeze().cpu().numpy()
-
-        def draw_tsne(tsne_file_name,feat_labels,name_list,tsne_coord):
-            temp_coord = tsne_coord.copy()
-            tsne_file_name = Path(output_path / tsne_file_name)
-            fig = plt.figure(figsize=(10, 10))
-            ax = fig.add_subplot(111)
-            if self.using_memory:
-                mem_embedded = temp_coord[mem_address:,:]
-                temp_coord = temp_coord[:mem_address, :]
-
-            for i,name in enumerate(name_list):
-                ax.scatter(temp_coord[feat_labels == i, 0], temp_coord[feat_labels == i, 1],
-                               c=sequence_of_colors[i], label=name, s=6)
-
-            for i, item in enumerate(mem_embedded):
-                ax.scatter(item[0], item[1], c="black", label='mem' + str(i), s=100, marker=">")
-
-            print('scatter plot done')
-            lgd = ax.legend(loc='upper center', bbox_to_anchor=(1.1, 1))
-            ax.set_xlim(-0.05, 1.05)
-            ax.set_ylim(-0.05, 1.05)
-            fig.savefig(tsne_file_name, bbox_extra_artists=(lgd,), bbox_inches='tight')
-            fig.clf()
-
+        mem_vecs = mem_vecs.cpu().numpy()
+        mem_vec_labels = mem_vec_labels.cpu().numpy()
 
         for perplexity in perplexities:
 
-            X_embedded = TSNE(n_components=2, perplexity=perplexity, learning_rate=learning_rate).fit_transform(feat_vecs)
-            print('\ntsne done')
-            X_embedded = (X_embedded - X_embedded.min()) / (X_embedded.max() - X_embedded.min())
-
-            # class wise tsne
-            tsne_file_name = 'feature_tsne_among_' + domains + '_' + str(perplexity) + '_' + str(
-                learning_rate) + '_class.png'
-            draw_tsne(tsne_file_name, feat_vec_labels, selected_cls,X_embedded)
+            # seen domain
+            domains2draw = ['G', 'S']
+            tsne_file_name = 'feature_tsne_among_' + ''.join(domains2draw) + '_' + str(perplexity) + '_' + str(
+                learning_rate) + '.png'
+            tsne_file_name = Path(output_path / tsne_file_name)
+            self.draw_tsne(tsne_file_name, feat_vecs, feat_vec_labels, feat_vec_domlabels, mem_vecs, mem_vec_labels,
+                           selected_cls, domains2draw=domains2draw, perplexity=perplexity, learning_rate=learning_rate)
+            # unseen domain
+            domains2draw = ['C']
+            tsne_file_name = 'feature_tsne_among_' + ''.join(domains2draw) + '_' + str(perplexity) + '_' + str(
+                learning_rate) + '.png'
+            tsne_file_name = Path(output_path / tsne_file_name)
+            self.draw_tsne(tsne_file_name, feat_vecs, feat_vec_labels, feat_vec_domlabels, mem_vecs, mem_vec_labels,
+                           selected_cls, domains2draw=domains2draw, perplexity=perplexity, learning_rate=learning_rate)
+            # all
+            domains2draw = ['G', 'S', 'C']
+            tsne_file_name = 'feature_tsne_among_' + ''.join(domains2draw) + '_' + str(perplexity) + '_' + str(
+                learning_rate) + '.png'
+            tsne_file_name = Path(output_path / tsne_file_name)
+            self.draw_tsne(tsne_file_name, feat_vecs, feat_vec_labels, feat_vec_domlabels, mem_vecs, mem_vec_labels,
+                           selected_cls, domains2draw=domains2draw, perplexity=perplexity, learning_rate=learning_rate)
 
             # domain wise tsne
-            tsne_file_name = 'feature_tsne_among_' + domains + '_' + str(perplexity) + '_' + str(
-                learning_rate) + '_domain.png'
-            draw_tsne(tsne_file_name, feat_vec_domlabels, domains,X_embedded)
+            # tsne_file_name = 'feature_tsne_among_' + self.domains + '_' + str(perplexity) + '_' + str(
+            #     learning_rate) + '_domain.png'
+            # draw_tsne(tsne_file_name, feat_vec_domlabels, domains,feat_vecs)
 
 
+    def draw_tsne(self,tsne_file_name, feat_vecs,feat_vec_labels,feat_vec_domlabels, mem_vecs,mem_vec_labels,cls_list,domains2draw = ['G','S'], perplexity = 30, learning_rate = 10): # per domain
+        sequence_of_colors = ["red", "green", "blue", "magenta", "cyan", "yellow", "black"]
+        domain_shape = ['o', 'P', '*']
+
+        cls2id = self.target_loader.dataset.idx_of_objects
+
+        domids2draw = [self.domains.index(x) for x in domains2draw]
+        def split_dom_datas(domids2draw):
+            temp = [feat_vec_domlabels == x for x in domids2draw]
+            output = np.zeros(temp[0].shape,dtype=bool)
+            for item in temp:
+                output = output | item
+            return feat_vecs[output], feat_vec_labels[output], feat_vec_domlabels[output]
+
+        feat_vecs_temp, feat_vec_labels_temp, feat_vec_domlabels_temp = split_dom_datas(domids2draw)
+
+        mem_address = feat_vecs_temp.shape[0]
+
+        vecs2tsne = np.concatenate((feat_vecs_temp,mem_vecs))
+
+        X_embedded = TSNE(n_components=2, perplexity=perplexity, learning_rate=learning_rate).fit_transform(
+            vecs2tsne)
+        print('\ntsne done')
+        X_embedded = (X_embedded - X_embedded.min()) / (X_embedded.max() - X_embedded.min())
+
+        feat_coords = X_embedded[:mem_address,:]
+        mem_coords = X_embedded[mem_address:,:]
+
+        fig = plt.figure(figsize=(10, 10))
+        ax = fig.add_subplot(111)
+
+        for dom_i,dom in enumerate(domids2draw):
+            for cls_i,cls in enumerate(cls_list):
+                temp_coords = feat_coords[(feat_vec_labels_temp == cls2id[cls]) & (feat_vec_domlabels_temp == dom),:]
+                ax.scatter(temp_coords[:, 0], temp_coords[:, 1],
+                           c=sequence_of_colors[cls_i], label=str(dom)+'_'+cls, s=20, marker = domain_shape[dom_i])
+
+        if self.using_memory:
+            for cls_i,cls in enumerate(cls_list):
+                ax.scatter(mem_coords[mem_vec_labels.squeeze() == cls2id[cls], 0], mem_coords[mem_vec_labels.squeeze() == cls2id[cls], 1],
+                           c=sequence_of_colors[cls_i], label='mem_' + str(cls), s=100, marker=">",edgecolors = 'black')
+
+        print('scatter plot done')
+        lgd = ax.legend(loc='upper center', bbox_to_anchor=(1.1, 1))
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
+        fig.savefig(tsne_file_name, bbox_extra_artists=(lgd,), bbox_inches='tight')
+        fig.clf()
 
 
 

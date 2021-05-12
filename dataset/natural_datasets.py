@@ -2,12 +2,14 @@ import os
 
 import cv2
 import torch
+import torchvision.transforms
 from PIL import Image
 from tqdm import trange
 
 from dataset.basedataset import BaseDataSet
 from dataset.splitter import *
 from dataset.transforms import *
+from dataset import transforms_robust
 
 """
 Improvements:
@@ -41,11 +43,17 @@ def get_transform(mode='train', base_long_size=520, scale=[0.5, 2.0],
             ])
         else:
             transforms = Compose([
+                #### mimic robustnet CVPR2021 ######
+                torchvision.transforms.RandomApply([torchvision.transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.5),
+                transforms_robust.RandomGaussianBlur(),
+                ####################################
+
                 RandomFlip(),
                 scale_op,
                 RandomCrop([crop_size, crop_size], mask_fill=ignore_idx),
-                random_gaussian_blur(),
+                # random_gaussian_blur(),
             ])
+
 
     elif mode == 'val' and not val_full_size:
         transforms = Compose([
