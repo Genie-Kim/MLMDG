@@ -37,3 +37,7 @@ RUN git config --global alias.lg "log --all --color --graph --pretty=format:'%Cr
 RUN git config --global alias.s "status -s"
 RUN sudo apt-get update
 RUN sudo apt-get install -y vim htop
+
+RUN sudo apt install -y git curl python3-pip exuberant-ctags ack-grep
+RUN sudo pip3 install pynvim flake8 pylint isort
+RUN wget --quiet https://raw.github.com/fisadev/fisa-vim-config/v12.0.1/config.vim -O ~/.vimrc
