@@ -116,7 +116,7 @@ class Deeplabv3plus_Memsup(DeepLab):
             self.m_items = None
 
 
-    def forward(self, x,mask=None,onlywriteloss=True):
+    def forward(self, x,mask=None,onlywriteloss=True,inverse_momentum=False):
         H, W = x.size(2), x.size(3)
         x, low_level_features = self.backbone(x)
         fea = self.ASSP(x)
@@ -127,7 +127,7 @@ class Deeplabv3plus_Memsup(DeepLab):
             if type(mask) != type(None):
                 writefeat = self.writefeat(fea)
                 # update memory & calculate loss(writing)
-                _, memloss = self.update_memory(writefeat,mask,onlywriteloss)
+                _, memloss = self.update_memory(writefeat,mask,onlywriteloss,inverse_momentum)
                 write_output = [writefeat,memloss]
             # reading with updated memory
             fea, softmax_score_query, softmax_score_memory = self.memory(fea, self.m_items)
@@ -142,11 +142,11 @@ class Deeplabv3plus_Memsup(DeepLab):
         return ([output,features], mem_output)
 
 
-    def update_memory(self,query,mask=None, onlyloss = False):
+    def update_memory(self,query,mask=None, onlyloss = False,inverse_momentum = False):
         # update
         # if onlyloss =True, then no update but calculate loss only.
         if type(self.m_items) != type(None):
-            self.m_items, memloss = self.memory.update(query, self.m_items,mask,onlyloss)
+            self.m_items, memloss = self.memory.update(query, self.m_items,mask,onlyloss,inverse_momentum)
 
         return self.m_items, memloss
 

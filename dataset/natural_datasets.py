@@ -23,7 +23,7 @@ Improvements:
 1. Network checked!
 2. Dataset checked!
 3. scheduler checked!
-4. 
+4.
 """
 
 ignore_idx = -1
@@ -44,8 +44,8 @@ def get_transform(mode='train', base_long_size=520, scale=[0.5, 2.0],
         else:
             transforms = Compose([
                 #### mimic robustnet CVPR2021 ######
-                torchvision.transforms.RandomApply([torchvision.transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.5),
-                transforms_robust.RandomGaussianBlur(),
+                #torchvision.transforms.RandomApply([torchvision.transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.5),
+                #transforms_robust.RandomGaussianBlur(),
                 ####################################
 
                 RandomFlip(),

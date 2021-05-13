@@ -67,3 +67,6 @@ CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network Deeplabv3plus
 
 exp_mldg_supmem_sep1_temp1_nooutseploss_1x1write_newtransform_momentum1e-5
 CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network Deeplabv3plus_Memsup --memory --supervised_mem --lamb_sep 1 --temperature 1 --name exp_mldg_supmem_sep1_temp1_nooutseploss_1x1write_newtransform_momentum1e-5 --sche lrplate --no_outer_memloss --add1by1 --momentum 0.5 &> exp_mldg_supmem_sep1_temp1_nooutseploss_1x1write_newtransform_momentum1e-5.out &
+
+exp_mldg_supmem_sep1_temp1_nooutseploss_1x1write_invmomentum1e-2
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network Deeplabv3plus_Memsup --memory --supervised_mem --lamb_sep 1 --temperature 1 --name exp_mldg_supmem_sep1_temp1_nooutseploss_1x1write_invmomentum1e-2 --sche lrplate --no_outer_memloss --add1by1 --momentum 0.2 &> exp_mldg_supmem_sep1_temp1_nooutseploss_1x1write_invmomentum1e-2.out &
