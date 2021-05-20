@@ -460,6 +460,7 @@ class MetaFrameWork(object):
 
                     self.print(self.get_string(epoch, it, loss_meters, acc_meters, lr, meta), end='')
                     self.tfb_log(epoch, it, loss_meters, acc_meters)
+                    torch.cuda.empty_cache()
                     if self.debug:
                         break
             self.print(self.train_timer.get_formatted_duration())
