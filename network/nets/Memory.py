@@ -238,14 +238,11 @@ class Memory_unsup(nn.Module):
 
 
 class Memory_sup(nn.Module):
-    def __init__(self, memory_size, feature_dim, key_dim, temp_update, temp_gather, supervised_mem, momentum,temperature):
+    def __init__(self, memory_size, feature_dim, momentum,temperature, add1by1,clsfy_loss,gumbel_read):
         super(Memory_sup, self).__init__()
         # Constants
         self.memory_size = memory_size  # when supervised memory, set same number with class num(19)
         self.feature_dim = feature_dim
-        self.key_dim = key_dim
-        self.temp_update = temp_update
-        self.temp_gather = temp_gather
         self.momentum = momentum
         self.temperature = temperature
         self.output = nn.Sequential(  # refer object contextual represenation network fusion layer...
@@ -253,7 +250,23 @@ class Memory_sup(nn.Module):
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
         )
+        if add1by1:
+            self.writefeat = nn.Sequential(  # refer object contextual represenation network fusion layer...
+                nn.Conv2d(256, 256, kernel_size=1, stride=1, bias=False),
+                nn.BatchNorm2d(256),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            self.writefeat = lambda x: x.clone()
+
+        if clsfy_loss:
+            self.mem_cls = torch.tensor([x for x in range(self.memory_size)]).cuda()
+            self.clsfier = nn.Linear(in_features=self.feature_dim, out_features=self.memory_size, bias=True)
+        else:
+            self.clsfier = None
+
         self.celoss = nn.CrossEntropyLoss(ignore_index=-1)
+        self.gumbel_read = gumbel_read
         initialize_weights(self)
 
     def hard_neg_mem(self, mem, i):
@@ -306,56 +319,110 @@ class Memory_sup(nn.Module):
         score = torch.matmul(query, torch.t(mem))  # b X h X w X m
         score = score.view(bs * h * w, m)  # (b X h X w) X m
 
-        score_query = F.softmax(score, dim=0)
-        score_memory = F.softmax(score, dim=1)
+        score_query = F.softmax(score, dim=0) # 특정 메모리 슬롯이 들어오는 query들과 어떤 관계인지.
+        score_memory = F.softmax(score, dim=1) # 특정 query vector과 메모리들과 어떤 관계인지.
 
         return score_query, score_memory
 
 
-    def protoNCEloss(self,mem,writefeat,mask):
-        # writefeat and mem is L2 normalized feature
-        writefeat = writefeat.permute(0, 2, 3, 1)
-        score = torch.matmul(writefeat, torch.t(mem))/self.temperature  # b X h X w X m
+    def get_gumbel_score(self, mem, query):
+        bs, h, w, d = query.size()
+        m, d = mem.size()
+
+        score = torch.matmul(query, torch.t(mem))  # b X h X w X m
+        score = score.view(bs * h * w, m)  # (b X h X w) X m
+
+        # using Gumbel softmax for categorical memory sampling.
+        score_query = F.gumbel_softmax(score, dim=0) # 특정 메모리 슬롯이 들어오는 query들과 어떤 관계인지. 확률을 sampling.
+        score_memory = F.gumbel_softmax(score, dim=1) # 특정 query vector과 메모리들과 어떤 관계인지.
+
+        return score_query, score_memory
+
+
+    def get_reading_loss(self,mem,query,mask):
+        ### get reading loss between Mt & reading feature
+        tempmask = self.make_feature_mask(mask, query.size()[2:])
+        query = F.normalize(query, dim=1)
+        # query and mem is L2 normalized feature
+        query = query.permute(0, 2, 3, 1)
+        score = torch.matmul(query, torch.t(mem))/self.temperature  # b X h X w X m
         score = score.permute(0, 3, 1, 2)  # b X m X h X w
-        celoss = self.celoss(score, mask[:, 0])
+        celoss = self.celoss(score, tempmask[:, 0])
         return celoss
 
-    def forward(self, query, key):  # doesn't update memory in forward
-
+    def forward(self, query, key, reading_detach):  # doesn't update memory in forward
         batch_size, dims, h, w = query.size()  # b X d X h X w
         query = F.normalize(query, dim=1)
-        query = query.permute(0, 2, 3, 1)  # b X h X w X d
         # read
-        updated_query, softmax_score_query, softmax_score_memory = self.read(query, key)
+        query = query.permute(0, 2, 3, 1)  # b X h X w X d
+        updated_query, softmax_score_query, softmax_score_memory = self.read(query, key,reading_detach)
 
         return updated_query, softmax_score_query, softmax_score_memory
 
-    def update(self, query, keys, mask, onlyloss=False):
-        batch_size, dims, h, w = query.size()
-        tempmask = F.interpolate(mask.type(torch.float32), query.size()[2:], mode='bilinear', align_corners=True)
-        tempmask = tempmask.type(torch.int64)
-        # query = F.interpolate(query, mask.size()[2:], mode='bilinear', align_corners=True) # no gpu memory...
-        query = F.normalize(query, dim=1)
-        memloss = self.protoNCEloss(keys,query,tempmask)
-        # memloss = self.protoNCEloss(keys,query,mask)
 
-        if not onlyloss:
-            with torch.no_grad():
-                tempmask = tempmask.clone().detach() #  이거 안하면 뒤에 backward 계산할때 tempmask값이 달라져서 에러남.
-                query = query.view(batch_size, dims, -1)
-                tempmask[tempmask == -1] = self.memory_size  # when supervised memory, memory size = class number
-                tempmask = F.one_hot(tempmask, num_classes=self.memory_size + 1).squeeze()
-                tempmask = tempmask.view(batch_size, -1, self.memory_size + 1).type(torch.float32)
-                denominator = tempmask.sum(1).unsqueeze(dim=1)
-                denominator[denominator == 0] = 1  # for nan
-                nominator = torch.matmul(query, tempmask)
-                prototypes = torch.div(nominator, denominator)
-                prototypes = torch.t(prototypes[:, :, :self.memory_size].mean(0))  # batchwise mean.
-                prototypes = F.normalize(prototypes, dim=1) # L2 normalized prototypes
-                updated_memory = F.normalize(self.momentum * keys + (1 - self.momentum) * prototypes,dim=1)  # memory momentum update
-                return updated_memory.detach(), memloss
+
+    def make_feature_mask(self,mask,size):
+        # making feature scale detached segmentation mask.
+        tempmask = F.interpolate(mask.type(torch.float32), size, mode='bilinear', align_corners=True).type(
+            torch.int64)
+        return tempmask.clone().detach()
+
+    def update(self, query, keys, mask, writing_detach):
+        keys = keys.detach() # writing은 항상 전의 메모리 gradient를 끊는다.
+
+        batch_size, dims, h, w = query.size()
+        tempmask = self.make_feature_mask(mask,query.size()[2:])
+
+        ### get writing feature.
+        query = self.writefeat(query)
+        query = F.normalize(query, dim=1)
+
+        ### update supervised memory
+        query = query.view(batch_size, dims, -1)
+        tempmask[tempmask == -1] = self.memory_size  # when supervised memory, memory size = class number
+        tempmask = F.one_hot(tempmask, num_classes=self.memory_size + 1).squeeze()
+        tempmask = tempmask.view(batch_size, -1, self.memory_size + 1).type(torch.float32)
+        denominator = tempmask.sum(1).unsqueeze(dim=1)
+        nominator = torch.matmul(query, tempmask)
+
+        nominator = torch.t(nominator.sum(0)) # batchwise sum
+        denominator = denominator.sum(0) # batchwise sum
+        denominator = denominator.squeeze()
+
+        updated_memory = keys.clone().detach()
+        for slot in range(self.memory_size):
+            if denominator[slot] != 0:
+                updated_memory[slot] = self.momentum * keys[slot] + (1 - self.momentum) * nominator[slot] # memory momentum update
+
+        updated_memory = F.normalize(updated_memory,dim=1) # normalize.
+
+        ### get diversity loss about updated memory.
+        div_loss = self.diversityloss(updated_memory)
+
+        ### get classification loss about updated memory
+        if type(self.clsfier) == type(None):
+            cls_loss = torch.tensor(0).cuda()
         else:
-            return keys.detach(), memloss
+            cls_loss = self.classification_loss(updated_memory)
+
+        writing_loss =[div_loss,cls_loss]
+
+        if writing_detach:
+            return updated_memory.detach(), writing_loss
+        else:
+            return updated_memory, writing_loss
+
+    def classification_loss(self,mem):
+
+        score = self.clsfier(mem)
+        return self.celoss(score,self.mem_cls)
+
+
+    def diversityloss(self,mem):
+
+        cos_sim = torch.matmul(mem, torch.t(mem))  # m x m
+        loss = (torch.sum(cos_sim) - torch.trace(cos_sim))/(self.memory_size*(self.memory_size-1))
+        return loss
 
 
     def pointwise_gather_loss(self, query_reshape, keys, gathering_indices, train):
@@ -401,14 +468,20 @@ class Memory_sup(nn.Module):
 
         return gathering_loss
 
-    def read(self, query, updated_memory):
+    def read(self, query, mem,reading_detach):
         batch_size, h, w, dims = query.size()  # b X h X w X d
 
-        softmax_score_query, softmax_score_memory = self.get_score(updated_memory, query)
+        if self.gumbel_read:
+            softmax_score_query, softmax_score_memory = self.get_gumbel_score(mem, query)
+        else:
+            softmax_score_query, softmax_score_memory = self.get_score(mem, query)
 
         query_reshape = query.contiguous().view(batch_size * h * w, dims)
 
-        concat_memory = torch.matmul(softmax_score_memory.detach(), updated_memory)  # (b X h X w) X d
+        if reading_detach:
+            concat_memory = torch.matmul(softmax_score_memory.detach(), mem)  # (b X h X w) X d
+        else:
+            concat_memory = torch.matmul(softmax_score_memory, mem)  # (b X h X w) X d
         updated_query = torch.cat((query_reshape, concat_memory), dim=1)  # (b X h X w) X 2d
         updated_query = updated_query.view(batch_size, h, w, 2 * dims)
         updated_query = updated_query.permute(0, 3, 1, 2)

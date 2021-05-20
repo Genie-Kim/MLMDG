@@ -3,6 +3,7 @@ from torch import nn
 from network.nets.deeplabv3_plus import DeepLab
 from network.nets.Memory import Memory_unsup, Memory_sup
 import torch.nn.functional as F
+from dataset.transforms import HideAndSeek
 
 # class Net(SegNet):
 #     def __init__(self, in_ch=3, nclass=19, backbone='resnet50', output_stride=8, pretrained=True, bn='torch'):
@@ -95,63 +96,55 @@ class Deeplabv3plus_Memunsup(DeepLab):
 
 class Deeplabv3plus_Memsup(DeepLab):
     def __init__(self, in_ch=3, nclass=19, backbone='resnet50', output_stride=8, pretrained=True, freeze_bn=False,
-                     freeze_backbone=False, skip_connect = True, memory_init = None, add1by1 = False, **_):
+                     freeze_backbone=False, skip_connect = True, memory_init = None,hideandseek = True, **_):
         super(Deeplabv3plus_Memsup, self).__init__(num_classes=nclass, in_channels=in_ch, backbone=backbone, pretrained=pretrained,
                 output_stride=output_stride, freeze_bn=freeze_bn, freeze_backbone=freeze_backbone,skip_connect = skip_connect,**_)
+
+        if hideandseek:
+            self.writeT = HideAndSeek()
+        else:
+            self.writeT = lambda x: x.clone()
+
 
         if type(memory_init) == dict:
             self.memory = Memory_sup(**memory_init)
             self.m_items = F.normalize(torch.rand((memory_init['memory_size'], memory_init['feature_dim']), dtype=torch.float),
                                        dim=1).cuda()  # Initialize the memory items
-
-            if add1by1:
-                self.writefeat = nn.Sequential(  # refer object contextual represenation network fusion layer...
-                    nn.Conv2d(256, 256, kernel_size=1, stride=1, bias=False),
-                    nn.BatchNorm2d(256),
-                    nn.ReLU(inplace=True),
-                )
-            else:
-                self.writefeat = lambda x : x.clone()
         else:
             self.m_items = None
 
 
-    def forward(self, x,mask=None,onlywriteloss=True):
+    def forward(self, x, mask = None, reading_detach = True):
         H, W = x.size(2), x.size(3)
         x, low_level_features = self.backbone(x)
         fea = self.ASSP(x)
-        features = F.normalize(fea, dim=1).clone().detach()
-        write_output = []
+        features = fea.clone()
+        read_output = []
         # memory
         if type(self.m_items) != type(None):
+            # get reading loss
+            reading_loss = 0
             if type(mask) != type(None):
-                writefeat = self.writefeat(fea)
-                # update memory & calculate loss(writing)
-                _, memloss = self.update_memory(writefeat,mask,onlywriteloss)
-                write_output = [writefeat,memloss]
+                reading_loss = self.memory.get_reading_loss(self.m_items, fea, mask)
             # reading with updated memory
-            fea, softmax_score_query, softmax_score_memory = self.memory(fea, self.m_items)
-            updated_features = fea.clone().detach()
-            read_output = [softmax_score_query, softmax_score_memory,updated_features]
-            mem_output = read_output + write_output
+            fea, softmax_score_query, softmax_score_memory = self.memory(fea, self.m_items,reading_detach)
+            updated_features = fea.clone()
+            read_output = [softmax_score_query, softmax_score_memory,reading_loss,updated_features]
 
         fea = self.decoder(fea, low_level_features)
-
         output = F.interpolate(fea, size=(H, W), mode='bilinear', align_corners=True)
 
-        return ([output,features], mem_output)
+        return ([output,features], read_output)
 
-
-    def update_memory(self,query,mask=None, onlyloss = False):
+    def update_memory(self, query, mask, writing_detach = True):
         # update
-        # if onlyloss =True, then no update but calculate loss only.
-        if type(self.m_items) != type(None):
-            self.m_items, memloss = self.memory.update(query, self.m_items,mask,onlyloss)
+        if not writing_detach:
+            query = self.writeT(query) # only hide and seek for learning writing
+        # if writing_detach = True, writing loss의 backpropagation은 되지만, 결과로 나온 updated memory의 gradient information은 없음.
+        self.m_items, writing_losses = self.memory.update(query, self.m_items, mask, writing_detach)
 
-        return self.m_items, memloss
+        return self.m_items, writing_losses
 
-    def get_memory(self):
-        return self.m_items
 
     def not_track(self, module=None):
         if module is None:

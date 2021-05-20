@@ -29,6 +29,30 @@ class Compose():
                 img, mask = func(img, mask, mode)
         return img, mask
 
+class HideAndSeek(object):
+    def __init__(self):
+        # possible grid size, 0 means no hiding
+        self.grid_sizes = [0, 32]
+        # hiding probability
+        self.hide_prob = 0.5
+
+    def __call__(self, inputimg):
+        # randomly choose one grid size
+        grid_size = np.random.choice(self.grid_sizes)
+
+        b, c, h, w = inputimg.shape
+        img = inputimg.clone()
+        # hide the patches
+        if grid_size == 0:
+            return img
+        for x in range(0, w, grid_size):
+            for y in range(0, h, grid_size):
+                x_end = min(w, x + grid_size)
+                y_end = min(h, y + grid_size)
+                if (random.random() <= self.hide_prob):
+                    img[:,:, x:x_end, y:y_end] = 0
+
+        return img
 
 class Resize():
     """Resize PIL Image size:(H, W)

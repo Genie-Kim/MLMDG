@@ -43,6 +43,8 @@ from scipy.ndimage.interpolation import shift
 from skimage.segmentation import find_boundaries
 from skimage.util import random_noise
 
+
+
 try:
     import accimage
 except ImportError:
@@ -241,6 +243,33 @@ def adjust_hue(img, hue_factor):
     img = Image.merge('HSV', (h, s, v)).convert(input_mode)
     return img
 
+class RandomApply(torch_tr.transforms.RandomTransforms):
+    """Apply randomly a list of transformations with a given probability
+
+    Args:
+        transforms (list or tuple): list of transformations
+        p (float): probability
+    """
+
+    def __init__(self, transforms, p=0.5):
+        super(RandomApply, self).__init__(transforms)
+        self.p = p
+
+    def __call__(self, img,mask,mode):
+        if self.p < random.random():
+            return img,mask
+        for t in self.transforms:
+            img,mask = t(img,mask,mode)
+        return img,mask
+
+    def __repr__(self):
+        format_string = self.__class__.__name__ + '('
+        format_string += '\n    p={}'.format(self.p)
+        for t in self.transforms:
+            format_string += '\n'
+            format_string += '    {0}'.format(t)
+        format_string += '\n)'
+        return format_string
 
 class ColorJitter(object):
     """Randomly change the brightness, contrast and saturation of an image.
@@ -297,8 +326,8 @@ class ColorJitter(object):
         transform = torch_tr.Compose(transforms)
 
         return transform
-
-    def __call__(self, img):
+    # changed
+    def __call__(self,  img: Image, mask: Image, mode):
         """
         Args:
             img (PIL Image): Input image.
@@ -308,4 +337,16 @@ class ColorJitter(object):
         """
         transform = self.get_params(self.brightness, self.contrast,
                                     self.saturation, self.hue)
-        return transform(img)
+        return transform(img), mask
+
+    # def __call__(self, img):
+    #     """
+    #     Args:
+    #         img (PIL Image): Input image.
+    #
+    #     Returns:
+    #         PIL Image: Color jittered image.
+    #     """
+    #     transform = self.get_params(self.brightness, self.contrast,
+    #                                 self.saturation, self.hue)
+    #     return transform(img)
