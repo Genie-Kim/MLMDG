@@ -3,8 +3,9 @@ from pathlib import Path
 
 from PIL import Image
 from torch.utils.data.dataset import Dataset
+from dataset import transforms_robust
 
-from dataset.transforms import ToTenser, medical_image_normalize, natural_image_normalize
+from dataset.transforms import ToTenser, medical_image_normalize, natural_image_normalize,do_nothing
 from utils.nn_utils import mkdir
 
 warnings.filterwarnings('ignore')
@@ -22,6 +23,7 @@ class BaseDataSet(Dataset):
         mkdir(self.output_path, create_self=True)
         self.force_cache = force_cache
         self.transforms = transform
+        self.meta_transform = do_nothing()
         self.mode = mode.lower()
         assert self.mode in ['train', 'test', 'val', 'full']
 
@@ -82,7 +84,7 @@ class BaseDataSet(Dataset):
     def __getitem__(self, index):
         img_filename, mask_filename = self.get_img_path(index)
         # TODO : remove to_tensor() and normalize()
-        funcs = [self.load_img, self.transforms, ToTenser(), self.normalize, self.post_process]
+        funcs = [self.load_img, self.transforms,self.meta_transform, ToTenser(), self.normalize, self.post_process]
 
         img = img_filename
         mask = mask_filename

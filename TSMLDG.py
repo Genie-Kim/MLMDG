@@ -29,7 +29,7 @@ class MetaFrameWork(object):
     def __init__(self, param_dicts):
 
         super(MetaFrameWork, self).__init__()
-        self.no_source_test = param_dicts['no_source_test']
+        self.no_source_test = False
         self.train_num = param_dicts['train_num']
         self.name = param_dicts['name']
         self.exp_name = 'experiment/' + self.name
@@ -68,7 +68,6 @@ class MetaFrameWork(object):
         self.no_outer_memloss = param_dicts['no_outer_memloss'] # if true, only segmentation loss on outer step.
         self.no_inner_memloss = param_dicts['no_inner_memloss'] # if true, only segmentation loss on inner step.
         self.sche = param_dicts['sche']
-        self.meta_version = param_dicts['meta_version']
 
         self.init(param_dicts['network_init'])
 
@@ -137,153 +136,24 @@ class MetaFrameWork(object):
         meta_train_imgs = imgs.view(-1, C, H, W)
         meta_train_targets = targets.view(-1, 1, H, W)
 
-        tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
-        if self.using_memory:
-            in_sep_loss = tr_mem_output[3]
-            in_cpt_loss = tr_mem_output[2]
-        else:
-            in_cpt_loss = torch.zeros(1).cuda()
-            in_sep_loss = torch.zeros(1).cuda()
-
+        # Meta-Train
+        tr_net_output, _ = self.backbone(meta_train_imgs)
         tr_logits = tr_net_output[0]
         tr_logits = make_same_size(tr_logits, meta_train_targets)
-        in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
-
-        if self.no_inner_memloss:
-            ds_loss = in_seg_loss
-        else:
-            ds_loss = in_seg_loss + self.lamb_cpt * in_cpt_loss + self.lamb_sep * in_sep_loss
-
+        ds_loss = self.ce(tr_logits, meta_train_targets[:, 0])
         with torch.no_grad():
             self.nim(tr_logits, meta_train_targets)
 
-        self.opt_old.zero_grad()
-        ds_loss.backward()
-        self.opt_old.step()
-
-        if self.sche == 'poly':
-            self.scheduler_old.step(epoch, it)
-
-        # memory update.
-        if self.using_memory:
-            self.backbone.eval()
-            with torch.no_grad():
-                self.backbone.module.update_memory(self.backbone(meta_train_imgs)[0][-1])
-            self.backbone.train()
-
-        losses = {
-            'dg': 0,
-            'ds': ds_loss.item(),
-
-            'in_seg_loss': in_seg_loss.item(),
-            'in_cpt_loss': in_cpt_loss.item(),
-            'in_sep_loss': in_sep_loss.item(),
-
-            'lr': self.opt_old.param_groups[-1]['lr'],
-
-        }
-        acc = {
-            'iou': self.nim.get_res()[0]
-        }
-        return losses, acc, self.opt_old.param_groups[-1]['lr']
-
-    def meta_train_v1(self, epoch, it, inputs):
-        # imgs : batch x domains x C x H x W
-        # targets : batch x domains x 1 x H x W
-
-        imgs, targets = inputs
-        B, D, C, H, W = imgs.size()
-        split_idx = np.random.permutation(D)
-        i = np.random.randint(1, D)
-        train_idx = split_idx[:i]
-        test_idx = split_idx[i:]
-        # train_idx = split_idx[:D // 2]
-        # test_idx = split_idx[D // 2:]
-
-        # self.print(split_idx, B, D, C, H, W)'
-        meta_train_imgs = imgs[:, train_idx].reshape(-1, C, H, W)
-        meta_train_targets = targets[:, train_idx].reshape(-1, 1, H, W)
-        meta_test_imgs = imgs[:, test_idx].reshape(-1, C, H, W)
-        meta_test_targets = targets[:, test_idx].reshape(-1, 1, H, W)
-
-        # Meta-Train
-
-        tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
-        if self.using_memory:
-            in_sep_loss = tr_mem_output[3]
-            in_cpt_loss = tr_mem_output[2]
-        else:
-            in_cpt_loss = torch.zeros(1).cuda()
-            in_sep_loss = torch.zeros(1).cuda()
-
-        tr_logits = tr_net_output[0]
-        tr_logits = make_same_size(tr_logits, meta_train_targets)
-        in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
-
-        if self.no_inner_memloss:
-            ds_loss = in_seg_loss
-        else:
-            ds_loss = in_seg_loss + self.lamb_cpt * in_cpt_loss + self.lamb_sep * in_sep_loss
-
         # Update new network
         self.opt_old.zero_grad()
-        ds_loss.backward(retain_graph=True)
-        self.updated_net = get_updated_network(self.backbone, self.updated_net, self.inner_update_lr).train().cuda()
-
-        # update inner updated network's memory using Et features
-        with torch.no_grad():
-            # synchronize memory
-            self.updated_net.module.m_items = self.backbone.module.m_items
-            mem_prime = self.updated_net.module.update_memory(tr_net_output[-1],meta_train_targets)
-
-
-        # Meta-Test
-        te_net_output, te_mem_output = self.updated_net(meta_test_imgs)
-        if self.using_memory:
-            out_sep_loss = te_mem_output[3]
-            out_cpt_loss = te_mem_output[2]
-        else:
-            out_cpt_loss = torch.zeros(1).cuda()
-            out_sep_loss = torch.zeros(1).cuda()
-
-        te_logits = te_net_output[0]
-        te_logits = make_same_size(te_logits, meta_test_targets)
-        out_seg_loss = self.ce(te_logits, meta_test_targets[:, 0])
-
-        if self.no_outer_memloss:
-            dg_loss = out_seg_loss
-        else:
-            dg_loss = out_seg_loss + self.lamb_cpt * out_cpt_loss + self.lamb_sep * out_sep_loss
-
-        with torch.no_grad():
-            self.nim(te_logits, meta_test_targets)
-
-        # Update old network
-        dg_loss.backward()
+        ds_loss.backward()
         self.opt_old.step()
         if self.sche=='poly':
             self.scheduler_old.step(epoch, it)
 
-        # memory update.
-        if self.using_memory:
-            self.backbone.eval()
-            with torch.no_grad():
-                tr_net_output, tr_mem_output = self.backbone(meta_train_imgs)
-                self.backbone.module.update_memory(tr_net_output[-1],meta_train_targets)
-            self.backbone.train()
-
         losses = {
-            'dg': dg_loss.item(),
+            'dg': 0,
             'ds': ds_loss.item(),
-
-            'in_seg_loss' : in_seg_loss.item(),
-            'in_cpt_loss' : in_cpt_loss.item(),
-            'in_sep_loss' : in_sep_loss.item(),
-
-            'out_seg_loss' : out_seg_loss.item(),
-            'out_cpt_loss' : out_cpt_loss.item(),
-            'out_sep_loss' : out_sep_loss.item(),
-
             'lr' : self.opt_old.param_groups[-1]['lr'],
         }
 
@@ -294,16 +164,146 @@ class MetaFrameWork(object):
         return losses, acc, self.opt_old.param_groups[-1]['lr']
 
 
-    def meta_train_v2(self, epoch, it, inputs):
+    def train_mem(self, epoch, it, inputs):
+        # imgs : batch x domains x C x H x W
+        # targets : batch x domains x 1 x H x W
+        imgs, targets = inputs
+        B, D, C, H, W = imgs.size()
+        meta_train_imgs = imgs.view(-1, C, H, W)
+        meta_train_targets = targets.view(-1, 1, H, W)
+
+        # backup the t_step memory items.
+        backup_mem_t = self.backbone.module.m_items.clone().detach()
+
+        # Meta-Train
+        tr_net_output, tr_mem_output = self.backbone(meta_train_imgs,meta_train_targets,reading_detach = True)
+        tr_logits = tr_net_output[0]
+        tr_features = tr_net_output[-1]
+
+        # update memory and get loss
+        _, in_write_losses = self.backbone.module.update_memory(tr_features,meta_train_targets,writing_detach = False)
+
+        tr_logits = make_same_size(tr_logits, meta_train_targets)
+        in_seg_loss = self.ce(tr_logits, meta_train_targets[:, 0])
+        in_read_loss = tr_mem_output[-2]
+
+        if self.no_inner_memloss:
+            ds_loss = in_seg_loss
+        else:
+            ds_loss = in_seg_loss + self.lamb_sep * (in_write_losses[0] + in_write_losses[1]) + self.lamb_cpt * in_read_loss
+
+        with torch.no_grad():
+            self.nim(tr_logits, meta_train_targets)
+
+        # Update new network
+        self.opt_old.zero_grad()
+        ds_loss.backward()
+        self.opt_old.step()
+        if self.sche=='poly':
+            self.scheduler_old.step(epoch, it)
+
+        # memory update.
+        self.backbone.eval()
+        with torch.no_grad():
+            # recover the t step memory.
+            self.backbone.module.m_items = backup_mem_t
+            # update memory to mem_t+1
+            tr_net_output, _ = self.backbone(meta_train_imgs, reading_detach=True)
+            tr_features = tr_net_output[-1]
+            _, _ = self.backbone.module.update_memory(tr_features,meta_train_targets,writing_detach = True)
+        self.backbone.train()
+
+        losses = {
+            'dg': 0,
+            'ds': ds_loss.item(),
+
+            'in_seg_loss' : in_seg_loss.item(),
+            'in_write0_loss' : in_write_losses[0].item(),
+            'in_write1_loss' : in_write_losses[1].item(),
+            'in_read_loss' : in_read_loss.item(),
+
+            'lr' : self.opt_old.param_groups[-1]['lr'],
+        }
+
+        acc = {
+            'iou': self.nim.get_res()[0],
+        }
+
+        return losses, acc, self.opt_old.param_groups[-1]['lr']
+
+    def meta_train(self, epoch, it, inputs,metridx, meteidx):
         # supervised mem + new update methods
         # imgs : batch x domains x C x H x W
         # targets : batch x domains x 1 x H x W
         imgs, targets = inputs
         B, D, C, H, W = imgs.size()
-        split_idx = np.random.permutation(D)
-        i = np.random.randint(1, D)
-        train_idx = split_idx[:i]
-        test_idx = split_idx[i:]
+        # split_idx = np.random.permutation(D)
+        # i = np.random.randint(1, D)
+        # train_idx = split_idx[:i]
+        # test_idx = split_idx[i:]
+        train_idx = metridx
+        test_idx = meteidx
+        # train_idx = split_idx[:D // 2]
+        # test_idx = split_idx[D // 2:]
+
+        # self.print(split_idx, B, D, C, H, W)'
+        meta_train_imgs = imgs[:, train_idx].reshape(-1, C, H, W)
+        meta_train_targets = targets[:, train_idx].reshape(-1, 1, H, W)
+
+        meta_test_imgs = imgs[:, test_idx].reshape(-1, C, H, W)
+        meta_test_targets = targets[:, test_idx].reshape(-1, 1, H, W)
+
+        # Meta-Train
+        tr_net_output, _ = self.backbone(meta_train_imgs)
+        tr_logits = tr_net_output[0]
+        tr_logits = make_same_size(tr_logits, meta_train_targets)
+        ds_loss = self.ce(tr_logits, meta_train_targets[:, 0])
+
+        # Update new network
+        self.opt_old.zero_grad()
+        ds_loss.backward(retain_graph=True)
+        self.updated_net = get_updated_network(self.backbone, self.updated_net, self.inner_update_lr).train().cuda()
+
+
+        # Meta-Test
+        te_net_output, _ = self.updated_net(meta_test_imgs)
+        te_logits = te_net_output[0]
+        te_logits = make_same_size(te_logits, meta_test_targets)
+        dg_loss = self.ce(te_logits, meta_test_targets[:, 0])
+
+        with torch.no_grad():
+            self.nim(te_logits, meta_test_targets)
+
+        # Update old network
+        dg_loss.backward()
+        self.opt_old.step()
+        if self.sche=='poly':
+            self.scheduler_old.step(epoch, it)
+
+        losses = {
+            'dg': dg_loss.item(),
+            'ds': ds_loss.item(),
+            'lr' : self.opt_old.param_groups[-1]['lr'],
+        }
+
+        acc = {
+            'iou': self.nim.get_res()[0],
+        }
+
+        return losses, acc, self.opt_old.param_groups[-1]['lr']
+
+    def meta_train_mem(self, epoch, it, inputs,metridx, meteidx):
+        # supervised mem + new update methods
+        # imgs : batch x domains x C x H x W
+        # targets : batch x domains x 1 x H x W
+        imgs, targets = inputs
+        B, D, C, H, W = imgs.size()
+        # split_idx = np.random.permutation(D)
+        # i = np.random.randint(1, D)
+        # train_idx = split_idx[:i]
+        # test_idx = split_idx[i:]
+        train_idx = metridx
+        test_idx = meteidx
         # train_idx = split_idx[:D // 2]
         # test_idx = split_idx[D // 2:]
 
@@ -397,36 +397,55 @@ class MetaFrameWork(object):
 
 
     def memory_initalize(self):
+        self.backbone.eval()
         with torch.no_grad():
             basket = torch.zeros(size = self.backbone.module.m_items.size()).cuda()
             count = torch.zeros(size = (self.nim.nclass,1)).cuda()
-            self.backbone.eval()
+
             for epoch in range(2):
                 for it, (path, imgs, targets) in enumerate(tqdm(self.train_loader,desc="memory initializing...epoch " + str(epoch))):
                     imgs, targets = to_cuda([imgs, targets])
                     B, D, C, H, W = imgs.size()
                     imgs = imgs.view(-1, C, H, W)
                     targets = targets.view(-1, 1, H, W)
-                    if self.backbone_name in ['Deeplabv3plus_Memsup','Deeplabv3plus_Memunsup']:
-                        x,_ = self.backbone.module.backbone(imgs)
-                        query = self.backbone.module.ASSP(x)
-                        batch_size, dims, h, w = query.size()
-                        targets = F.interpolate(targets.type(torch.float32), query.size()[2:], mode='bilinear',
-                                                 align_corners=True)
-                        targets = targets.type(torch.int64)
-                        query = query.view(batch_size, dims, -1)
-                        targets[targets == -1] = self.nim.nclass  # when supervised memory, memory size = class number
-                        targets = F.one_hot(targets, num_classes=self.nim.nclass + 1).squeeze()
-                        targets = targets.view(batch_size, -1, self.nim.nclass + 1).type(torch.float32)
+                    query = self.backbone(imgs)[0][-1]
+                    batch_size, dims, h, w = query.size()
+                    targets = F.interpolate(targets.type(torch.float32), query.size()[2:], mode='bilinear',
+                                             align_corners=True)
+                    targets = targets.type(torch.int64)
+                    query = query.view(batch_size, dims, -1)
+                    targets[targets == -1] = self.nim.nclass  # when supervised memory, memory size = class number
+                    targets = F.one_hot(targets, num_classes=self.nim.nclass + 1).squeeze()
+                    targets = targets.view(batch_size, -1, self.nim.nclass + 1).type(torch.float32)
 
-                        count += torch.t(targets.sum(1).unsqueeze(dim=1)[:,:,:self.nim.nclass].sum(0))
-                        basket += torch.t(torch.matmul(query, targets)[:,:,:self.nim.nclass].sum(0))
-                        if self.debug:
-                            break
-
+                    count += torch.t(targets.sum(1).unsqueeze(dim=1)[:,:,:self.nim.nclass].sum(0))
+                    basket += torch.t(torch.matmul(query, targets)[:,:,:self.nim.nclass].sum(0))
+                    if self.debug:
+                        break
             count[count == 0] = 1 # for nan
             init_prototypes = torch.div(basket, count)
             self.backbone.module.m_items = F.normalize(init_prototypes, dim=1)
+
+        self.backbone.train()
+
+    def meta_transform(self, justidx = False):
+        # this must called before dataloader enumerate.
+        # meteidx is meta test dataset idx, and it will be hard augmentated
+        D = len(self.source)
+        split_idx = np.random.permutation(D)
+        i = np.random.randint(1, D)
+        metridx = split_idx[:i]
+        meteidx = split_idx[i:]
+        if ~justidx:
+            for i in range(D):
+                if i in metridx:
+                    self.train_loader.dataset.domains[i].meta_transform = transforms_robust.RandomApply(
+                        [transforms_robust.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.5)
+                elif i in meteidx:
+                    self.train_loader.dataset.domains[i].meta_transform = transforms_robust.RandomApply(
+                        [transforms_robust.ColorJitter(0.8, 0.8, 0.8, 0.3)], p=0.5)
+        return metridx, meteidx
+
 
     def do_train(self):
         if self.resume:
@@ -445,15 +464,22 @@ class MetaFrameWork(object):
             self.backbone.train()
             self.epoch = epoch
             with self.train_timer:
+                metridx, meteidx = self.meta_transform() # befor for function initialize.
                 for it, (paths, imgs, target) in enumerate(self.train_loader):
                     meta = (it + 1) % self.train_num == 0
                     if meta:
-                        if self.meta_version == 1:
-                            losses, acc, lr = self.meta_train_v1(epoch - 1, it, to_cuda([imgs, target]))
-                        elif self.meta_version == 2:
-                            losses, acc, lr = self.meta_train_v2(epoch - 1, it, to_cuda([imgs, target]))
+                        if self.using_memory:
+                            losses, acc, lr = self.meta_train_mem(epoch - 1, it, to_cuda([imgs, target]),metridx, meteidx)
+                        else:
+                            losses, acc, lr = self.meta_train(epoch - 1, it, to_cuda([imgs, target]),metridx, meteidx)
+                        # meta test idx domains get hard photometric augmentation.
+                        metridx, meteidx = self.meta_transform()
+
                     else:
-                        losses, acc, lr = self.train(epoch - 1, it, to_cuda([imgs, target]))
+                        if self.using_memory:
+                            losses, acc, lr = self.train_mem(epoch - 1, it, to_cuda([imgs, target]))
+                        else:
+                            losses, acc, lr = self.train(epoch - 1, it, to_cuda([imgs, target]))
 
                     loss_meters.update_meters(losses, skips=['dg'] if not meta else [])
                     acc_meters.update_meters(acc)
@@ -463,6 +489,7 @@ class MetaFrameWork(object):
                     torch.cuda.empty_cache()
                     if self.debug:
                         break
+
             self.print(self.train_timer.get_formatted_duration())
             self.log(self.get_string(epoch, it, loss_meters, acc_meters, lr, meta) + '\n')
 
