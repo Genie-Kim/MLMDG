@@ -90,14 +90,30 @@ CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network Deeplabv3plus
 
 
 ---------------------------------new version command line--------------------------
-exp_mlmdg_FCN_resnet50_clsloss_gumbelread_G
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN_resnet50_clsloss_gumbelread_G --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_FCN_resnet50_clsloss_gumbelread_G.out &
+exp_mldg_Dlv3r50
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network Deeplabv3plus_Memsup --name exp_mldg_Dlv3r50 --backbone resnet50 --sche lrplate &> exp_mldg_Dlv3r50.out &
+
+exp_agg_Dlv3r50
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network Deeplabv3plus_Memsup --name exp_agg_Dlv3r50 --backbone resnet50 --sche lrplate --train-num 10000000 &> exp_agg_Dlv3r50.out &
+
+exp_mlmdg_clsloss_gumbelread_fixed
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GS --network Deeplabv3plus_Memsup --memory --name exp_mlmdg_clsloss_gumbelread_fixed --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_clsloss_gumbelread_fixed.out &
+
+exp_mlmdg_clsloss_gumbelread_singleG
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GG --network Deeplabv3plus_Memsup --memory --name exp_mlmdg_clsloss_gumbelread_singleG --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_clsloss_gumbelread_singleG.out &
 
 
-exp_mlmdg_FCN_resnet101_clsloss_gumbelread_G
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN_resnet101_clsloss_gumbelread_G --backbone resnet101 --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_FCN_resnet101_clsloss_gumbelread_G.out &
 
+exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_G
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_G --sche lrplate --add1by1 --clsfy_loss --gumbel_read --output_stride 8 &> exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_G.out &
 
+exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_S
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source SS --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_S --sche lrplate --add1by1 --clsfy_loss --gumbel_read --output_stride 8 &> exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_S.out &
 
+exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G --backbone resnet101 --sche lrplate --add1by1 --clsfy_loss --gumbel_read --output_stride 8 &> exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G.out &
+
+exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_S
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source SS --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_S --backbone resnet101 --sche lrplate --add1by1 --clsfy_loss --gumbel_read --output_stride 8 &> exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_S.out &
 
 

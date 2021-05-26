@@ -392,7 +392,7 @@ class Memory_sup(nn.Module):
         updated_memory = keys.clone().detach()
         for slot in range(self.memory_size):
             if denominator[slot] != 0:
-                updated_memory[slot] = self.momentum * keys[slot] + (1 - self.momentum) * nominator[slot] # memory momentum update
+                updated_memory[slot] = self.momentum * keys[slot] + ((1 - self.momentum) * nominator[slot]/denominator[slot]) # memory momentum update
 
         updated_memory = F.normalize(updated_memory,dim=1) # normalize.
 

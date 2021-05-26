@@ -96,12 +96,17 @@ class MetaFrameWork(object):
         dataloader = functools.partial(DataLoader, num_workers=workers, pin_memory=True, batch_size=batch_size, shuffle=True)
         self.train_loader = dataloader(self.dataset(mode='train', domains=self.source, force_cache=True,crop_size=crop_size))
 
-        dataloader = functools.partial(DataLoader, num_workers=workers, pin_memory=True, batch_size=self.test_size, shuffle=False)
+        dataloader = functools.partial(DataLoader, num_workers=workers, pin_memory=True, batch_size=self.train_size, shuffle=False)
         self.source_val_loader = dataloader(self.dataset(mode='val', domains=self.source, force_cache=True,crop_size=crop_size))
 
         target_dataset, folder = get_dataset(self.target)
-        self.target_loader = dataloader(target_dataset(root=ROOT + folder, mode='val'))
-        self.target_test_loader = dataloader(target_dataset(root=ROOT + folder, mode='test'))
+        self.target_loader = dataloader(target_dataset(root=ROOT + folder, mode='test'))
+        # if self.target != 'M':
+        #     # deactivate target validation transform, domains have different img size. so target should be 1 on training.
+        #     # if target datasets image size is not identical, should do validation transform.
+        #     self.target_loader.dataset.transforms = None
+
+        # self.target_test_loader = dataloader(target_dataset(root=ROOT + folder, mode='test'))
 
         self.opt_old = SGD(self.backbone.parameters(), lr=self.outer_update_lr, momentum=0.9, weight_decay=5e-4)
 
@@ -464,22 +469,23 @@ class MetaFrameWork(object):
             self.backbone.train()
             self.epoch = epoch
             with self.train_timer:
-                metridx, meteidx = self.meta_transform() # befor for function initialize.
+                metridx, meteidx = self.meta_transform(justidx=True)
                 for it, (paths, imgs, target) in enumerate(self.train_loader):
                     meta = (it + 1) % self.train_num == 0
                     if meta:
                         if self.using_memory:
                             losses, acc, lr = self.meta_train_mem(epoch - 1, it, to_cuda([imgs, target]),metridx, meteidx)
+                            # meta test idx domains get hard photometric augmentation.
+                            metridx, meteidx = self.meta_transform()
                         else:
                             losses, acc, lr = self.meta_train(epoch - 1, it, to_cuda([imgs, target]),metridx, meteidx)
-                        # meta test idx domains get hard photometric augmentation.
-                        metridx, meteidx = self.meta_transform()
-
                     else:
                         if self.using_memory:
                             losses, acc, lr = self.train_mem(epoch - 1, it, to_cuda([imgs, target]))
                         else:
                             losses, acc, lr = self.train(epoch - 1, it, to_cuda([imgs, target]))
+                    if lr < 5e-6:
+                        assert False, 'No more training because small lr'
 
                     loss_meters.update_meters(losses, skips=['dg'] if not meta else [])
                     acc_meters.update_meters(acc)
@@ -653,39 +659,6 @@ class MetaFrameWork(object):
             self.epoch = 1
             return False
 
-    # def predict_target(self, load_path='best_city', color=False, train=False, output_path='predictions'):
-    #     self.load(load_path)
-    #     import skimage.io as skio
-    #     dataset = self.target_test_loader
-    #
-    #     output_path = Path(self.save_path / output_path)
-    #     output_path.mkdir(exist_ok=True)
-    #
-    #     if train:
-    #         self.backbone.module.remove_dropout()
-    #         self.backbone.train()
-    #     else:
-    #         self.backbone.eval()
-    #
-    #     with torch.no_grad():
-    #         self.nim.clear_cache()
-    #         self.nim.set_max_len(len(dataset))
-    #         for names, img, target in tqdm(dataset):
-    #             img = to_cuda(img)
-    #             logits = self.backbone(img)[0]
-    #             logits = F.interpolate(logits, img.size()[2:], mode='bilinear', align_corners=True)
-    #             preds = get_prediction(logits).cpu().numpy()
-    #             if color:
-    #                 trainId_preds = preds
-    #             else:
-    #                 trainId_preds = dataset.dataset.predict(preds)
-    #
-    #             for pred, name in zip(trainId_preds, names):
-    #                 file_name = name.split('/')[-1]
-    #                 if color:
-    #                     pred = class_map_2_color_map(pred).transpose(1, 2, 0).astype(np.uint8)
-    #                 skio.imsave(str(output_path / file_name), pred)
-
     def predict_target(self, load_path='best_city', output_path='predictions',savenum = 10,inputimgname=None):
         self.load(load_path)
 
@@ -737,9 +710,7 @@ class MetaFrameWork(object):
                     continue
 
 
-    def draw_tsne_domcls(self, perplexities=[30], learning_rate=10, imagenum=1,pthname = 'ckpt.pth',output_path='tsne_domcls'):
-        # ToDo : 1. class feature 숫자가 균형맞지 않으면 tsne 그림이 이상해짐, class별 feature 숫자를 맞추고 여러 이미지에서 가져오는것 필요.
-        #  2. 메모리 tsne 플롯한 결과 겹쳐서 나옴, 메모리 아이템을 저장할 때 노말라이즈를 하는데, backbone을 거쳐 나온 feature도 normalize를 하고 plot해야하는지 알아봐야함.
+    def draw_tsne_domcls(self, perplexities=[30], learning_rate=10, imagenum=1,pthname = 'ckpt.pth',output_path='tsne_domcls',all_class = False):
 
         assert perplexities is not list
         import skimage.io as skio
@@ -753,9 +724,15 @@ class MetaFrameWork(object):
 
         datasets = [(dom,get_target_loader(dom, 1, num_workers=0,mode='test',shuffle=False)) for dom in self.domains]
 
-        selected_cls = ['road','building','vegetation','sky','person','car']
-        # selected_cls = ['person','vegetation','car']
-        # selected_cls = ['road','building','sky']
+        if all_class:
+            selected_cls = ['road', 'sidewalk', 'building', 'wall', 'fence', 'pole', 'traffic_light', 'traffic_sign',
+                      'vegetation', 'terrain', 'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle',
+                      'bicycle']
+        else:
+            # selected_cls = ['road','building','vegetation','sky','person','car']
+            selected_cls = ['road','building','vegetation','sky','person','car','bus']
+            # selected_cls = ['person','vegetation','car']
+            # selected_cls = ['road','building','sky']
 
         cls2id = self.target_loader.dataset.idx_of_objects
 
@@ -774,6 +751,7 @@ class MetaFrameWork(object):
                     outputs = self.backbone(img)[0]
 
                     features = outputs[-1]
+                    features = F.normalize(features, dim=1)
                     target[target == -1] = self.nim.nclass
                     target = F.interpolate(target.to(torch.float32), features.size()[2:], mode='bilinear', align_corners=True)
                     target[(target - target.to(torch.int32).to(torch.float32)) != 0] = self.nim.nclass
@@ -830,9 +808,6 @@ class MetaFrameWork(object):
                 mem_vecs = torch.cat((mem_vecs, m_items[cls2id[cls], :].unsqueeze(dim=0)), dim=0)
                 mem_vec_labels = torch.cat((mem_vec_labels, torch.zeros(1,1).cuda() + cls2id[cls]), dim=0)
 
-            # unsupervised
-            # feat_vecs = torch.cat((feat_vecs, m_items), dim=0)
-
 
         del self.backbone
         torch.cuda.empty_cache()
@@ -873,9 +848,129 @@ class MetaFrameWork(object):
             # draw_tsne(tsne_file_name, feat_vec_domlabels, domains,feat_vecs)
 
 
+
+
+    def draw_mean_tsne_domcls(self, perplexities=[30], learning_rate=10, imagenum=100,pthname = 'best_city.pth',output_path='tsne_domcls',all_class = False):
+        # ToDo : 1. class feature 숫자가 균형맞지 않으면 tsne 그림이 이상해짐, class별 feature 숫자를 맞추고 여러 이미지에서 가져오는것 필요.
+        #  2. 메모리 tsne 플롯한 결과 겹쳐서 나옴, 메모리 아이템을 저장할 때 노말라이즈를 하는데, backbone을 거쳐 나온 feature도 normalize를 하고 plot해야하는지 알아봐야함.
+
+        assert perplexities is not list
+
+        self.load(pthname)
+        output_path = Path(self.save_path / output_path)
+        output_path.mkdir(exist_ok=True)
+        self.domains = (self.source + self.target)
+
+        datasets = [(dom,get_target_loader(dom, 1, num_workers=0,mode='test',shuffle=True)) for dom in self.domains]
+
+        if all_class:
+            selected_cls = ['road', 'sidewalk', 'building', 'wall', 'fence', 'pole', 'traffic_light', 'traffic_sign',
+                      'vegetation', 'terrain', 'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle',
+                      'bicycle']
+        else:
+            # selected_cls = ['road','building','vegetation','sky','person','car']
+            selected_cls = ['road','building','vegetation','sky','person','car','bus']
+            # selected_cls = ['person','vegetation','car']
+            # selected_cls = ['road','building','sky']
+
+        cls2id = self.target_loader.dataset.idx_of_objects
+        selected_clsid = [cls2id[x] for x in selected_cls]
+
+        self.backbone.eval()
+        feat_vecs = torch.tensor([]).cuda()
+        feat_vec_labels = torch.tensor([]).cuda()
+        feat_vec_domlabels = torch.tensor([]).cuda()
+
+
+        with torch.no_grad():
+            for domi, (dom, dataset) in enumerate(datasets):
+                count = 0
+                for p, img, target in tqdm(dataset,dom + ' domain..'):
+                    img, target = to_cuda(get_img_target(img, target))
+                    outputs = self.backbone(img)[0]
+                    features = outputs[-1]
+                    features = F.normalize(features, dim=1)
+                    target = F.interpolate(target.to(torch.float32), features.size()[2:], mode='bilinear',
+                                           align_corners=True)
+                    target[target == -1] = self.nim.nclass
+                    target[(target - target.to(torch.int32).to(torch.float32)) != 0] = self.nim.nclass
+
+                    tempmask = F.one_hot(target.to(torch.int64), num_classes=self.nim.nclass + 1).squeeze()
+                    features = features.view(features.size(0), features.size(1), -1)
+                    tempmask = tempmask.view(features.size(0), -1, self.nim.nclass + 1).type(torch.float32)
+                    denominator = tempmask.sum(1).unsqueeze(dim=1)
+                    nominator = torch.matmul(features, tempmask)
+
+                    nominator = torch.t(nominator.sum(0))  # batchwise sum
+                    denominator = denominator.sum(0)  # batchwise sum
+                    denominator = denominator.squeeze()
+
+                    for slot in range(self.nim.nclass):
+                        if slot in selected_clsid:
+                            if denominator[slot] != 0:
+                                cls_vec = nominator[slot]/denominator[slot] # mean vector
+                                cls_label = (torch.zeros(1,1) + slot).cuda()
+                                dom_label = (torch.zeros(1,1) + domi).cuda()
+                                feat_vecs = torch.cat((feat_vecs, cls_vec.unsqueeze(dim=0)), dim=0)
+                                feat_vec_labels = torch.cat((feat_vec_labels, cls_label), dim=0)
+                                feat_vec_domlabels = torch.cat((feat_vec_domlabels, dom_label), dim=0)
+                    if count >= imagenum:
+                        break
+                    count += 1
+
+        if self.using_memory:
+            m_items = self.backbone.module.m_items.clone().detach()
+            mem_vecs = torch.tensor([]).cuda()
+            mem_vec_labels = torch.tensor([]).cuda()
+            # supervised.
+            for clsi, cls in enumerate(selected_cls):
+                mem_vecs = torch.cat((mem_vecs, m_items[cls2id[cls], :].unsqueeze(dim=0)), dim=0)
+                mem_vec_labels = torch.cat((mem_vec_labels, torch.zeros(1,1).cuda() + cls2id[cls]), dim=0)
+
+
+        del self.backbone
+        torch.cuda.empty_cache()
+
+        feat_vecs = F.normalize(feat_vecs,dim=1).cpu().numpy()
+        feat_vec_labels = feat_vec_labels.to(torch.int64).squeeze().cpu().numpy()
+        feat_vec_domlabels = feat_vec_domlabels.to(torch.int64).squeeze().cpu().numpy()
+        mem_vecs = mem_vecs.cpu().numpy()
+        mem_vec_labels = mem_vec_labels.cpu().numpy()
+
+        for perplexity in perplexities:
+
+            # seen domain
+            domains2draw = ['G', 'S']
+            tsne_file_name = 'feature_tsne_among_' + ''.join(domains2draw) + '_' + str(perplexity) + '_' + str(
+                learning_rate) + '.png'
+            tsne_file_name = Path(output_path / tsne_file_name)
+            self.draw_tsne(tsne_file_name, feat_vecs, feat_vec_labels, feat_vec_domlabels, mem_vecs, mem_vec_labels,
+                           selected_cls, domains2draw=domains2draw, perplexity=perplexity, learning_rate=learning_rate)
+            # unseen domain
+            domains2draw = ['C']
+            tsne_file_name = 'feature_tsne_among_' + ''.join(domains2draw) + '_' + str(perplexity) + '_' + str(
+                learning_rate) + '.png'
+            tsne_file_name = Path(output_path / tsne_file_name)
+            self.draw_tsne(tsne_file_name, feat_vecs, feat_vec_labels, feat_vec_domlabels, mem_vecs, mem_vec_labels,
+                           selected_cls, domains2draw=domains2draw, perplexity=perplexity, learning_rate=learning_rate)
+            # all
+            domains2draw = ['G', 'S', 'C']
+            tsne_file_name = 'feature_tsne_among_' + ''.join(domains2draw) + '_' + str(perplexity) + '_' + str(
+                learning_rate) + '.png'
+            tsne_file_name = Path(output_path / tsne_file_name)
+            self.draw_tsne(tsne_file_name, feat_vecs, feat_vec_labels, feat_vec_domlabels, mem_vecs, mem_vec_labels,
+                           selected_cls, domains2draw=domains2draw, perplexity=perplexity, learning_rate=learning_rate)
+
+            # domain wise tsne
+            # tsne_file_name = 'feature_tsne_among_' + self.domains + '_' + str(perplexity) + '_' + str(
+            #     learning_rate) + '_domain.png'
+            # draw_tsne(tsne_file_name, feat_vec_domlabels, domains,feat_vecs)
+
+
+
     def draw_tsne(self,tsne_file_name, feat_vecs,feat_vec_labels,feat_vec_domlabels, mem_vecs,mem_vec_labels,cls_list,domains2draw = ['G','S'], perplexity = 30, learning_rate = 10): # per domain
-        sequence_of_colors = ["red", "green", "blue", "magenta", "cyan", "yellow", "black"]
-        domain_shape = ['o', 'P', '*']
+        sequence_of_colors = ["tab:blue", "tab:orange","tab:green","tab:red","tab:purple","tab:brown","tab:pink","tab:gray","tab:olive","tab:cyan","yellow" , "lawngreen","grey","darkslategray","lime","navy","blueviolet","blue","coral","peru", "lawngreen","grey","darkslategray","lime","navy","blueviolet"]
+        domain_shape = ['o', '*', 'x', 'd']
 
         cls2id = self.target_loader.dataset.idx_of_objects
 
@@ -908,7 +1003,7 @@ class MetaFrameWork(object):
             for cls_i,cls in enumerate(cls_list):
                 temp_coords = feat_coords[(feat_vec_labels_temp == cls2id[cls]) & (feat_vec_domlabels_temp == dom),:]
                 ax.scatter(temp_coords[:, 0], temp_coords[:, 1],
-                           c=sequence_of_colors[cls_i], label=str(dom)+'_'+cls, s=20, marker = domain_shape[dom_i])
+                           c=sequence_of_colors[cls_i], label=self.domains[dom]+'_'+cls, s=20, marker = domain_shape[dom_i])
 
         if self.using_memory:
             for cls_i,cls in enumerate(cls_list):
@@ -920,6 +1015,7 @@ class MetaFrameWork(object):
         ax.set_xlim(-0.05, 1.05)
         ax.set_ylim(-0.05, 1.05)
         fig.savefig(tsne_file_name, bbox_extra_artists=(lgd,), bbox_inches='tight')
+        # plt.show()
         fig.clf()
 
 

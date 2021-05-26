@@ -61,6 +61,7 @@ def get_transform(mode='train', base_long_size=520, scale=[0.5, 2.0],
         ])
     else:
         transforms = None
+
     return transforms
 
 
@@ -345,7 +346,8 @@ class Mapillary(GTA5):
                                       train_name='training', val_name='validation', test_name='testing',
                                       img_filter='jpg', force_cache=self.force_cache)
         train, dev, test = splitter.get_train_dev_test_path()
-        return train, dev, test
+        # no test label.
+        return train, dev, dev
 
 
 # 1280 x 964
@@ -371,6 +373,66 @@ class IDD(CityScapesDataSet):
         print('Class range : [0, 33], (has 255)')
         print(self._key)
         print(self._mapping)
+
+
+
+# # 1280 x 720
+# # 120 epoch
+# class BDD(CityScapesDataSet):
+#
+#     def __init__(self, root, output_path='.', force_cache=False, mode='train',
+#                  base_size=1280, crop_size=720, scale=[0.5, 2.0], random_scale=True, random_rotate=True):
+#         super(BDD, self).__init__(root, output_path, force_cache, mode, base_size, crop_size, scale, random_scale, random_rotate)
+#         self.classes = ['void', 'void', 'sky', 'building', 'road', 'sidewalk', 'fence', 'vegetation', 'pole', 'car',
+#                         'traffic_sign',
+#                         'person', 'bicycle', 'motorcycle', 'parking_slot', 'road_work', 'traffic_light', 'terrain',
+#                         'rider', 'truck', 'bus', 'train', 'wall', 'lanemarking']
+#         self._key = np.array(label_to_citys(self.classes, self.idx_of_objects)).astype('int32')
+#         self._mapping = np.array(range(-1, len(self._key))).astype('int32')
+#
+#     def print_label_mapping(self):
+#         for c, id in zip(self.classes, self._key):
+#             print('{} : {}'.format(c, id), end=' ')
+#         print('')
+#         print('Class range : [0, 22]')
+#         print(self._key)
+#         print(self._mapping)
+#
+#     def load_img(self, img_filename, mask_filename, mode):
+#         img = Image.open(img_filename)
+#         img = img.convert('RGB')
+#
+#         mask = cv2.imread(mask_filename, -1)[:, :, -1]
+#         mask = Image.fromarray(mask)
+#         mask = mask.convert('L')
+#         return img, mask
+#
+#     def split_data(self, root):
+#         root = Path(root) / 'RAND_CITYSCAPES' / 'RGB'
+#         img_to_mask = [['RGB'], ['GT/LABELS']]
+#         splitter = ZeroLevelKFoldSplitter(root, img_to_mask, cache_path=self.output_path / 'dataset' / 'synthia',
+#                                           train_rate=0.7, dev_rate=0.3,
+#                                           img_filter='png', force_cache=self.force_cache)
+#         train, dev, test = splitter.get_train_dev_test_path()
+#         return train, dev, dev
+#
+#     def split_data(self, root):
+#         root = Path(root)/ 'image'
+#         img_to_mask = [['image','.jpg'], ['label','_drivable_id.png']]
+#         splitter = TwoLevelSplitter(root, img_to_mask, cache_path=self.output_path / 'dataset' / 'bddsnowy',
+#                                     # TODO change back
+#                                     # val_name='val', test_name='test',
+#                                     img_filter='jpg', force_cache=True)
+#         train, dev, test = splitter.get_train_dev_test_path()
+#         return train, dev, test
+#
+#     def __len__(self):
+#         if self.mode == 'train':
+#             return len(self.paths)
+#         else:
+#             return 500
+
+
 
 
 def to_gray(img):
