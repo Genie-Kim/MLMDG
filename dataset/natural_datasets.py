@@ -268,6 +268,7 @@ class Synthia(CityScapesDataSet):
 # 1914 x 1052
 # 12403, 6382, 6181
 # 30 epoch
+# label is color map.
 class GTA5(CityScapesDataSet):
     def __init__(self, root, output_path='.', force_cache=False, mode='train',
                  base_size=1914, crop_size=700, scale=[0.5, 2.0], random_scale=True,
@@ -374,65 +375,53 @@ class IDD(CityScapesDataSet):
         print(self._key)
         print(self._mapping)
 
-
-
 # # 1280 x 720
 # # 120 epoch
-# class BDD(CityScapesDataSet):
-#
-#     def __init__(self, root, output_path='.', force_cache=False, mode='train',
-#                  base_size=1280, crop_size=720, scale=[0.5, 2.0], random_scale=True, random_rotate=True):
-#         super(BDD, self).__init__(root, output_path, force_cache, mode, base_size, crop_size, scale, random_scale, random_rotate)
-#         self.classes = ['void', 'void', 'sky', 'building', 'road', 'sidewalk', 'fence', 'vegetation', 'pole', 'car',
-#                         'traffic_sign',
-#                         'person', 'bicycle', 'motorcycle', 'parking_slot', 'road_work', 'traffic_light', 'terrain',
-#                         'rider', 'truck', 'bus', 'train', 'wall', 'lanemarking']
-#         self._key = np.array(label_to_citys(self.classes, self.idx_of_objects)).astype('int32')
-#         self._mapping = np.array(range(-1, len(self._key))).astype('int32')
-#
-#     def print_label_mapping(self):
-#         for c, id in zip(self.classes, self._key):
-#             print('{} : {}'.format(c, id), end=' ')
-#         print('')
-#         print('Class range : [0, 22]')
-#         print(self._key)
-#         print(self._mapping)
-#
-#     def load_img(self, img_filename, mask_filename, mode):
-#         img = Image.open(img_filename)
-#         img = img.convert('RGB')
-#
-#         mask = cv2.imread(mask_filename, -1)[:, :, -1]
-#         mask = Image.fromarray(mask)
-#         mask = mask.convert('L')
-#         return img, mask
-#
-#     def split_data(self, root):
-#         root = Path(root) / 'RAND_CITYSCAPES' / 'RGB'
-#         img_to_mask = [['RGB'], ['GT/LABELS']]
-#         splitter = ZeroLevelKFoldSplitter(root, img_to_mask, cache_path=self.output_path / 'dataset' / 'synthia',
-#                                           train_rate=0.7, dev_rate=0.3,
-#                                           img_filter='png', force_cache=self.force_cache)
-#         train, dev, test = splitter.get_train_dev_test_path()
-#         return train, dev, dev
-#
-#     def split_data(self, root):
-#         root = Path(root)/ 'image'
-#         img_to_mask = [['image','.jpg'], ['label','_drivable_id.png']]
-#         splitter = TwoLevelSplitter(root, img_to_mask, cache_path=self.output_path / 'dataset' / 'bddsnowy',
-#                                     # TODO change back
-#                                     # val_name='val', test_name='test',
-#                                     img_filter='jpg', force_cache=True)
-#         train, dev, test = splitter.get_train_dev_test_path()
-#         return train, dev, test
-#
-#     def __len__(self):
-#         if self.mode == 'train':
-#             return len(self.paths)
-#         else:
-#             return 500
+class BDD100K(CityScapesDataSet):
 
+    def __init__(self, root, output_path='.', force_cache=False, mode='train',
+                 base_size=1280, crop_size=720, scale=[0.5, 2.0], random_scale=True, random_rotate=True):
+        super(BDD100K, self).__init__(root, output_path, force_cache, mode, base_size, crop_size, scale, random_scale, random_rotate)
+        self.classes = ['void', 'road', 'sidewalk', 'building', 'wall', 'fence', 'pole', 'traffic_light', 'traffic_sign', 'vegetation', 'terrain', 'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle']
+        self._key = np.array(label_to_citys(self.classes, self.idx_of_objects)).astype('int32')
+        self._mapping = np.array(range(-1, len(self._key))).astype('int32')
 
+    def print_label_mapping(self):
+        for c, id in zip(self.classes, self._key):
+            print('{} : {}'.format(c, id), end=' ')
+        print('')
+        print('Class range : [0, 19]')
+        print(self._key)
+        print(self._mapping)
+
+    def split_data(self, root):
+        root = Path(root)/'images'/'10k'
+        img_to_mask = [['images','10k','.jpg'], ['labels','sem_seg/masks','.png']]
+        splitter = OneLevelSplitter(root, img_to_mask, cache_path=self.output_path / 'dataset' / 'bdd100k',train_name='train', val_name='val', test_name='test',
+        img_filter='.jpg', force_cache=self.force_cache)
+        train, dev, test = splitter.get_train_dev_test_path()
+        no_mask_imglist = ['9342e334-33d167eb.jpg', '80a9e37d-e4548ac1.jpg', '52e3fd10-c205dec2.jpg', '3d581db5-2564fb7e.jpg', '781756b0-61e0a182.jpg', '78ac84ba-07bd30c2.jpg']
+        for item in no_mask_imglist:
+            for i, x in enumerate(train):
+                if item in x:
+                    train.pop(i)
+            for i, x in enumerate(dev):
+                if item in x:
+                    dev.pop(i)
+            for i, x in enumerate(test):
+                if item in x:
+                    test.pop(i)
+        # no test label.
+        return train, dev, dev
+
+    def load_img(self, img_filename, mask_filename, mode):
+        img = Image.open(img_filename)
+        img = img.convert('RGB')
+
+        mask = cv2.imread(mask_filename, -1)
+        mask = Image.fromarray(mask)
+        mask = mask.convert('L')
+        return img, mask
 
 
 def to_gray(img):
@@ -474,7 +463,7 @@ if __name__ == '__main__':
     roots = [ROOT + 'cityscapes',
              ROOT + 'SYNTHIA', ROOT + 'GTA5',
              ROOT + 'mapillary', ROOT + 'IDD', ]
-    datasets = [CityScapesDataSet, Synthia, GTA5, Mapillary, IDD,
+    datasets = [CityScapesDataSet, Synthia, GTA5, Mapillary, IDD,BDD100K
                 ]
     output_path = 'tmp'
     force_cache = True

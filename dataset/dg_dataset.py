@@ -26,6 +26,7 @@ def get_dataset(name):
         'I': IDD,
         'M': Mapillary,
         'C': CityScapesDataSet,
+        'B': BDD100K,
     }
     root_dicts = {
         'G': 'GTA5',
@@ -33,6 +34,7 @@ def get_dataset(name):
         'I': 'IDD',
         'M': 'mapillary',
         'C': 'cityscapes',
+        'B': 'bdd100k'
     }
     if name not in dataset_dicts.keys():
         return None, None
