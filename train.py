@@ -142,9 +142,9 @@ if __name__ == '__main__':
     # job = FunctionJob([train], gpus=[[1]])
     # job.run(minimum_memory=10000)
     # os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-    # train()
+    train()
     # draw_tsne()
     # predict()
-    eval()
+    # eval()
     # validation 모드는 center crop transform 되며(이미지 사이즈가 데이터셋에서 다를수 있기 때문) test 모드는 그렇지 않음
     # cityscapse는 test label이 없기 때문에 natural dataset 모듈에서 test가 validation으로 output 된다.(split ...함수에서 output의 test부분을 dev로 바꾸면 됨)

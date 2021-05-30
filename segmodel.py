@@ -53,11 +53,12 @@ class FCN_Memsup(nn.Module):
     def forward(self, x,mask = None, reading_detach = True):
         H, W = x.size(2), x.size(3)
         fea = self.backbone(x)[0]
-        fea = self.reading_feat(fea)
         features = fea.clone()
         read_output = []
         # memory
         if type(self.m_items) != type(None):
+            fea = self.reading_feat(fea)
+            features = fea.clone()
             # get reading loss
             reading_loss = 0
             if type(mask) != type(None):
