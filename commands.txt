@@ -130,7 +130,7 @@ CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --
 
 ## resnet101 FCN8s mlmdg no reading module
 exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule
-CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GS --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule.out &
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule.out &
 
 
 # 여기서부터 두개.
