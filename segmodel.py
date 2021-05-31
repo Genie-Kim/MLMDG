@@ -24,16 +24,19 @@ class FCNHead(nn.Sequential):
 
 
 class FCN_Memsup(nn.Module):
-    def __init__(self, in_ch=3, nclass=19, backbone='resnet50', output_stride=8, pretrained=True,memory_init = None, hideandseek = True):
+    def __init__(self, in_ch=3, nclass=19, backbone='resnet50', output_stride=8, pretrained=True,memory_init = None, hideandseek = True,reading_module = False):
         super(FCN_Memsup, self).__init__()
         feat_channels =2048
         self.backbone = ResNet(in_channels=in_ch, output_stride=output_stride, pretrained=pretrained, backbone=backbone)
 
         if type(memory_init) == dict:
-            self.reading_feat = nn.Sequential(
-                nn.Conv2d(feat_channels, memory_init['feature_dim'], 1, padding=0, dilation=1, bias=False),
-                nn.BatchNorm2d(memory_init['feature_dim']),
-                nn.ReLU(inplace=True))
+            if reading_module == True:
+                self.reading_feat = nn.Sequential(
+                    nn.Conv2d(feat_channels, memory_init['feature_dim'], 1, padding=0, dilation=1, bias=False),
+                    nn.BatchNorm2d(memory_init['feature_dim']),
+                    nn.ReLU(inplace=True))
+            else:
+                self.reading_feat = lambda x: x
 
             self.fcnhead = FCNHead(memory_init['feature_dim'], nclass)
 

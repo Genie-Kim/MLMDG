@@ -246,14 +246,14 @@ class Memory_sup(nn.Module):
         self.momentum = momentum
         self.temperature = temperature
         self.output = nn.Sequential(  # refer object contextual represenation network fusion layer...
-            nn.Conv2d(512, 256, kernel_size=1, stride=1, bias=False),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(feature_dim*2, feature_dim, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(feature_dim),
             nn.ReLU(inplace=True),
         )
         if add1by1:
             self.writefeat = nn.Sequential(  # refer object contextual represenation network fusion layer...
-                nn.Conv2d(256, 256, kernel_size=1, stride=1, bias=False),
-                nn.BatchNorm2d(256),
+                nn.Conv2d(feature_dim, feature_dim, kernel_size=1, stride=1, bias=False),
+                nn.BatchNorm2d(feature_dim),
                 nn.ReLU(inplace=True),
             )
         else:

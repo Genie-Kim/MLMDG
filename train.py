@@ -25,6 +25,7 @@ parser.add_argument('--no_inner_memloss', action='store_true', help='memory loss
 parser.add_argument('--lamb_cpt', type=float, default=2e-1, help='loss rate of reading contrastive loss')
 parser.add_argument('--lamb_sep', type=float, default=1e-1, help='loss rate of writing losses')
 parser.add_argument('--train-size', type=int, default=4, help='the batch size of training')
+parser.add_argument('--memorydim', type=int, default=256, help='memory feature dimension')
 parser.add_argument('--test-size', type=int, default=1, help='the batch size of evaluation')
 parser.add_argument('--train-num', type=int, default=1,
                     help='every ? iteration do one meta train, 1 is meta train, 10000000 is normal supervised learning.')
@@ -37,6 +38,7 @@ parser.add_argument('--add1by1', action='store_true', help='adding 1x1 conv for 
 parser.add_argument('--clsfy_loss', action='store_true', help='using classification loss for memory')
 parser.add_argument('--gumbel_read', action='store_true', help='using gumbel softmax function for reading')
 parser.add_argument('--hideandseek', action='store_true', help='using hide and seek on writing')
+parser.add_argument('--reading_module', action='store_true', help='using hide and seek on writing for FCN model')
 parser.add_argument('--sche', default='lrplate',choices=['lrplate', 'cosine', 'poly'], help='scheduler')
 parser.add_argument('--momentum', type=float, default=0.8, help='outer learning rate of network update')
 parser.add_argument('--temperature', type=float, default=1, help='temperature of reading contrastive loss')
@@ -56,7 +58,7 @@ def init():
     if args['network'] in ['Deeplabv3plus_Memsup']:
 
         if args['memory']:
-            memory_init = {'memory_size': 19, 'feature_dim': 256,
+            memory_init = {'memory_size': 19, 'feature_dim': args['memorydim'],
                            'momentum': args['momentum'], 'temperature': args['temperature'], 'add1by1': args['add1by1'],
                            'clsfy_loss': args['clsfy_loss'], 'gumbel_read': args['gumbel_read']}
         else:
@@ -72,14 +74,14 @@ def init():
     elif args['network'] in ['FCN_Memsup']:
 
         if args['memory']:
-            memory_init = {'memory_size': 19, 'feature_dim': 256,
+            memory_init = {'memory_size': 19, 'feature_dim': args['memorydim'] if args['reading_module'] else 2048,
                            'momentum': args['momentum'], 'temperature': args['temperature'], 'add1by1': args['add1by1'],
                            'clsfy_loss': args['clsfy_loss'], 'gumbel_read': args['gumbel_read']}
         else:
             memory_init = None
 
         network_init = {'in_ch': 3, 'nclass': 19, 'backbone': args['backbone'], 'output_stride': 8,
-                        'pretrained': True,'hideandseek': args['hideandseek'],'memory_init': memory_init}
+                        'pretrained': True,'hideandseek': args['hideandseek'],'memory_init': memory_init,'reading_module' : args['reading_module']}
 
 
     else:
@@ -112,7 +114,8 @@ def predict():
 def eval():
     args = init()
     name = args['name']
-    targets = "CBMGS" # ex: GSC
+    # targets = "CBMGS" # ex: GSC
+    targets = "CBM" # ex: GSC
     framework = MetaFrameWork(args)
     for target in targets:
         # for one experiment, test multi targets in multi batch_sizes
@@ -141,7 +144,7 @@ if __name__ == '__main__':
     # from utils.task import FunctionJob
     # job = FunctionJob([train], gpus=[[1]])
     # job.run(minimum_memory=10000)
-    # os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     train()
     # draw_tsne()
     # predict()
