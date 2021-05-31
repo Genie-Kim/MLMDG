@@ -128,9 +128,20 @@ exp_agg_FCN8s_resnet50_G
 CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --name exp_agg_FCN8s_resnet50_G --sche lrplate --train-num 10000000 --reading_module &> exp_agg_FCN8s_resnet50_G.out &
 
 
-## resnet101 FCN8s mlmdg no reading module
+## resnet101 FCN8s mlmdg no reading module (memory overflow over 24G)
 exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule
-CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule.out &
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule --backbone resnet101 --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_noreadingmodule.out &
+
+
+# 여기서부터 두개 새로 돌림 20210531
+
+exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_memdim512
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_memdim512 --backbone resnet101 --sche lrplate --add1by1 --clsfy_loss --gumbel_read --reading_module --memorydim 512 &> exp_mlmdg_FCN8s_resnet101_clsloss_gumbelread_G_memdim512.out &
+
+exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_G_noreadingmodule
+CUDA_VISIBLE_DEVICES=1 nohup python train.py --source GG --network FCN_Memsup --memory --name exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_G_noreadingmodule --sche lrplate --add1by1 --clsfy_loss --gumbel_read &> exp_mlmdg_FCN8s_resnet50_clsloss_gumbelread_G_noreadingmodule.out &
+
+
 
 
 # 여기서부터 두개.
